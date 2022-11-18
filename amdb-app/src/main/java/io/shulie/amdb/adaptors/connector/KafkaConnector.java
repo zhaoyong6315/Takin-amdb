@@ -1,6 +1,5 @@
 package io.shulie.amdb.adaptors.connector;
 
-import cn.hutool.core.collection.ListUtil;
 import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Queues;
 import io.shulie.amdb.adaptors.instance.InstanceAdaptor;
@@ -10,6 +9,7 @@ import io.shulie.takin.sdk.kafka.MessageReceiveCallBack;
 import io.shulie.takin.sdk.kafka.MessageReceiveService;
 import io.shulie.takin.sdk.kafka.entity.MessageEntity;
 import io.shulie.takin.sdk.kafka.impl.KafkaSendServiceFactory;
+import org.assertj.core.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
@@ -24,8 +24,6 @@ public class KafkaConnector implements Connector {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaConnector.class);
 
-    private MessageReceiveService messageReceiveService;
-
     Set<String> pathCache = new HashSet<>();
 
     Map<String, String> pathTopicMap = new HashMap<>();
@@ -39,7 +37,6 @@ public class KafkaConnector implements Connector {
 
     @Override
     public boolean close() throws Exception {
-        messageReceiveService.stop();
         instancePathTimeSet.clear();
         pathCache.clear();
         return true;
@@ -55,8 +52,6 @@ public class KafkaConnector implements Connector {
         if (redisPassword != null){
             jedis.auth(redisPassword);
         }
-
-        messageReceiveService = new KafkaSendServiceFactory().getKafkaMessageReceiveInstance();
         pathTopicMap.put(InstanceStatusAdaptor.INSTANCE_STATUS_PATH, "stress-test-config-log-pradar-status");
         pathTopicMap.put(InstanceAdaptor.INSTANCE_PATH, "stress-test-config-log-pradar-client");
     }
@@ -90,7 +85,8 @@ public class KafkaConnector implements Connector {
                 Queues.<Runnable>newArrayBlockingQueue(2), threadFactory,
                 new ThreadPoolExecutor.DiscardOldestPolicy());
         executor.execute(() -> {
-            messageReceiveService.receive(ListUtil.of(pathTopicMap.get(path)), new MessageReceiveCallBack() {
+            MessageReceiveService messageReceiveService = new KafkaSendServiceFactory().getKafkaMessageReceiveInstance();
+            messageReceiveService.receive(Lists.newArrayList(pathTopicMap.get(path)), new MessageReceiveCallBack() {
                 @Override
                 public void success(MessageEntity messageEntity) {
                     Map entityBody = messageEntity.getBody();
