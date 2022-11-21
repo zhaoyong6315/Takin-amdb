@@ -1,89 +1,126 @@
-/*
- * Copyright 2021 Shulie Technology, Co.Ltd
- * Email: shulie@shulie.io
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+package io.shulie.amdb.run;
 
-package io.shulie.amdb.adaptors.instance;
-
-import io.shulie.amdb.adaptors.AdaptorTemplate;
-import io.shulie.amdb.adaptors.base.AbstractDefaultAdaptor;
-import io.shulie.amdb.adaptors.connector.Connector;
+import com.alibaba.fastjson.JSON;
 import io.shulie.amdb.adaptors.connector.DataContext;
 import io.shulie.amdb.adaptors.instance.model.InstanceStatusModel;
 import io.shulie.amdb.entity.TAmdbAppInstanceStatusDO;
 import io.shulie.amdb.request.query.AppInstanceStatusQueryRequest;
 import io.shulie.amdb.service.AppInstanceStatusService;
 import io.shulie.amdb.utils.StringUtil;
+import io.shulie.surge.data.deploy.pradar.parser.utils.Md5Utils;
+import io.shulie.takin.sdk.kafka.MessageReceiveCallBack;
+import io.shulie.takin.sdk.kafka.MessageReceiveService;
+import io.shulie.takin.sdk.kafka.entity.MessageEntity;
+import io.shulie.takin.sdk.kafka.impl.KafkaSendServiceFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.assertj.core.util.Lists;
+import org.springframework.boot.context.event.ApplicationStartedEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.stereotype.Component;
 
+import javax.annotation.Resource;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
-/**
- * @author vincent
- */
-// FIXME 如果增加分布式部署，需要增加分布式锁，保证每个path只有一个服务在处理
+@Component
 @Slf4j
-public class InstanceStatusAdaptor extends AbstractDefaultAdaptor {
+public class InstanceStatusKafkaMonitor implements ApplicationListener<ApplicationStartedEvent> {
+
+    Map<String, String> instancePathMap = new HashMap<>(100);
 
     private static final String INSTANCE_STATUS_PATH = "/config/log/pradar/status/";
 
     /**
-     * path-> appName+"#"+ip+"#"+pid
+     * INSTANCE_STATUS_PATH + "/" + appName + "/" + agentId + "/" + tenantAppKey + "/" + envCode
      */
     private static final Map<String, String> INSTANCE_STATUS_CACHE = new HashMap<>();
 
+    @Resource
     private AppInstanceStatusService appInstanceStatusService;
 
-    private AdaptorTemplate adaptorTemplate;
+    @Override
+    public void onApplicationEvent(ApplicationStartedEvent applicationStartedEvent) {
 
-    public InstanceStatusAdaptor() {
+        Executors.newCachedThreadPool().execute(() -> {
+            MessageReceiveService messageReceiveService = new KafkaSendServiceFactory().getKafkaMessageReceiveInstance();
+            messageReceiveService.receive(Lists.newArrayList("stress-test-config-log-pradar-status"), new MessageReceiveCallBack() {
+                @Override
+                public void success(MessageEntity messageEntity) {
+                    Map entityBody = messageEntity.getBody();
+                    log.info("接收到stress-test-config-log-pradar-status消息:{}", JSON.toJSONString(entityBody));
+                    Object appName = entityBody.get("appName");
+                    Object agentId = entityBody.get("agentId");
+                    Object tenantAppKey = entityBody.get("tenantAppKey");
+                    Object envCode = entityBody.get("envCode");
+                    if (appName == null) {
+                        log.warn("接收到的节点信息应用名为空，数据出现问题，接收到的数据为数据为:{}", JSON.toJSONString(entityBody));
+                        return;
+                    }
+                    if (agentId == null) {
+                        log.warn("接收到的节点信息agentId为空，数据出现问题，接收到的数据为数据为:{}", JSON.toJSONString(entityBody));
+                        return;
+                    }
+
+                    String instancePath = INSTANCE_STATUS_PATH + appName + "/" + agentId + "/" + tenantAppKey + "/" + envCode;
+
+                    String body = JSON.toJSONString(entityBody);
+                    DataContext<InstanceStatusModel> dataContext = new DataContext<>();
+                    dataContext.setPath(instancePath);
+                    InstanceStatusModel instanceStatusModel = JSON.parseObject(body, InstanceStatusModel.class);
+                    dataContext.setModel(instanceStatusModel);
+                    if (instancePathMap.containsKey(instancePath)) {
+                        //如果应用节点信息没有任何更新，不重复处理本条数据
+                        String md5 = Md5Utils.md5(body);
+                        if (md5.equals(instancePathMap.get(instancePath))) {
+                            updateTime(dataContext);
+                            return;
+                        }
+                    }
+                    process(dataContext);
+                }
+
+                @Override
+                public void fail(String errorMessage) {
+                    log.error("节点信息接收kafka消息出现异常，errorMessage:{}", errorMessage);
+                }
+            });
+        });
+        Executors.newScheduledThreadPool(1).scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                batchOffline();
+            }
+        },20 ,60 ,TimeUnit.SECONDS);
 
     }
 
+    private void updateTime(DataContext<InstanceStatusModel> dataContext) {
+        InstanceStatusModel model = dataContext.getModel();
+        TAmdbAppInstanceStatusDO selectParam = new TAmdbAppInstanceStatusDO();
+        // 如果AgentId被修改，则用原先的ID来更新
+        selectParam.setAppName(model.getAppName());
+        selectParam.setIp(model.getAddress());
+        selectParam.setPid(model.getPid());
+        selectParam.setUserAppKey(model.getTenantAppKey());
+        selectParam.setEnvCode(model.getEnvCode());
 
-    @Override
-    public void addConnector() {
-        adaptorTemplate.addConnector(Connector.ConnectorType.ZOOKEEPER_NODE);
-    }
-
-    /**
-     *
-     */
-    @Override
-    public void registor() {
-
-    }
-
-
-    @Override
-    public void setAdaptorTemplate(AdaptorTemplate adaptorTemplate) {
-        this.adaptorTemplate = adaptorTemplate;
+        TAmdbAppInstanceStatusDO amdbAppInstanceDO = appInstanceStatusService.selectOneByParam(selectParam);
+        if (amdbAppInstanceDO != null) {
+            amdbAppInstanceDO.setGmtModify(new Date());
+            appInstanceStatusService.update(amdbAppInstanceDO);
+        }
     }
 
 
-    @Override
-    public boolean close() throws Exception {
-        return false;
-    }
-
-    @Override
-    public Object process(DataContext dataContext) {
+    public Object process(DataContext<InstanceStatusModel> dataContext) {
         String path[] = dataContext.getPath().replaceAll(INSTANCE_STATUS_PATH, "").split("/");
         String appName = path[0];
-        InstanceStatusModel instanceStatusModel = (InstanceStatusModel) dataContext.getModel();
+        InstanceStatusModel instanceStatusModel = dataContext.getModel();
         String oldInstanceKey = INSTANCE_STATUS_CACHE.get(dataContext.getPath());
 
         //如果从zk中获取到的数据模型不为空,则进入更新或者插入逻辑
@@ -261,17 +298,10 @@ public class InstanceStatusAdaptor extends AbstractDefaultAdaptor {
         appInstanceStatusService.deleteByParams(request);
     }
 
-
-    /**
-     * @param config
-     */
-    @Override
-    public void addConfig(Map<String, Object> config) {
-        super.addConfig(config);
-
-        if (!config.containsKey("appInstanceStatusService")) {
-            throw new IllegalArgumentException("AppInstanceStatusService is not init.");
-        }
-        this.appInstanceStatusService = (AppInstanceStatusService) config.get("appInstanceStatusService");
+    private void batchOffline(){
+        Calendar instance = Calendar.getInstance();
+        instance.add(Calendar.MINUTE, -3);
+        appInstanceStatusService.batchOfflineByTime(instance.getTime());
     }
+
 }

@@ -35,6 +35,7 @@ import tk.mybatis.mapper.entity.Example;
 import tk.mybatis.mapper.entity.Example.Criteria;
 
 import javax.annotation.Resource;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
@@ -274,6 +275,14 @@ public class AppInstanceStatusServiceImpl implements AppInstanceStatusService {
         ret.setProbeFailCount(probeFailCount);
 
         return ret;
+    }
+
+    @Override
+    public void batchOfflineByTime(Date date) {
+        Example example = new Example(TAmdbAppInstanceStatusDO.class);
+        Criteria criteria = example.createCriteria();
+        criteria.andLessThan("gmtModify", date);
+        appInstanceStatusMapper.deleteByExample(example);
     }
 
     private Criteria createInstanceStatusCriteria(Example example, AppInstanceStatusQueryRequest param) {

@@ -19,6 +19,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
+import io.shulie.amdb.adaptors.utils.FlagUtil;
 import io.shulie.amdb.common.Response;
 import io.shulie.amdb.common.dto.agent.AgentInfoDTO;
 import io.shulie.amdb.common.dto.instance.AppInfo;
@@ -26,6 +27,7 @@ import io.shulie.amdb.common.request.agent.AmdbAgentInfoQueryRequest;
 import io.shulie.amdb.common.request.app.AppInfoQueryRequest;
 import io.shulie.amdb.entity.TAmdbAgentInfoDO;
 import io.shulie.amdb.entity.TAmdbAppInstanceDO;
+import io.shulie.amdb.entity.TAmdbAppInstanceStatusDO;
 import io.shulie.amdb.exception.AmdbExceptionEnums;
 import io.shulie.amdb.mapper.AppInstanceMapper;
 import io.shulie.amdb.mapper.TAmdbAgentInfoDOMapper;
@@ -320,6 +322,18 @@ public class AppInstanceServiceImpl implements AppInstanceService {
         PageHelper.startPage(request.getCurrentPage(), request.getPageSize());
         List<AppInfo> appInfos = appInstanceMapper.selectSummaryAppInfo(map);
         return Response.success(PagingUtils.result(appInfos, appInfos));
+    }
+
+    @Override
+    public void batchOfflineByTime(Date time) {
+        Example example = new Example(TAmdbAppInstanceStatusDO.class);
+        Example.Criteria criteria = example.createCriteria();
+        criteria.andLessThan("gmtModify", time);
+        List<TAmdbAppInstanceDO> tAmdbAppInstanceDOS = appInstanceMapper.selectByExample(example);
+        tAmdbAppInstanceDOS.forEach(tAmdbAppInstanceDO -> {
+            tAmdbAppInstanceDO.setFlag(FlagUtil.setFlag(tAmdbAppInstanceDO.getFlag(), 1, false));
+            appInstanceMapper.updateByPrimaryKey(tAmdbAppInstanceDO);
+        });
     }
 
     private AgentInfoDTO agentId(TAmdbAgentInfoDO agentInfoDO) {

@@ -1,25 +1,7 @@
-/*
- * Copyright 2021 Shulie Technology, Co.Ltd
- * Email: shulie@shulie.io
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-package io.shulie.amdb.adaptors.instance;
+package io.shulie.amdb.run;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.TypeReference;
-import io.shulie.amdb.adaptors.AdaptorTemplate;
-import io.shulie.amdb.adaptors.base.AbstractDefaultAdaptor;
-import io.shulie.amdb.adaptors.connector.Connector;
 import io.shulie.amdb.adaptors.connector.DataContext;
 import io.shulie.amdb.adaptors.instance.model.InstanceModel;
 import io.shulie.amdb.adaptors.utils.FlagUtil;
@@ -36,71 +18,122 @@ import io.shulie.amdb.service.AppInstanceService;
 import io.shulie.amdb.service.AppInstanceStatusService;
 import io.shulie.amdb.service.AppService;
 import io.shulie.amdb.utils.StringUtil;
+import io.shulie.surge.data.deploy.pradar.parser.utils.Md5Utils;
+import io.shulie.takin.sdk.kafka.MessageReceiveCallBack;
+import io.shulie.takin.sdk.kafka.MessageReceiveService;
+import io.shulie.takin.sdk.kafka.entity.MessageEntity;
+import io.shulie.takin.sdk.kafka.impl.KafkaSendServiceFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.assertj.core.util.Lists;
+import org.springframework.boot.context.event.ApplicationStartedEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.stereotype.Component;
+import org.springframework.util.CollectionUtils;
 import tk.mybatis.mapper.entity.Example;
 
+import javax.annotation.Resource;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
-/**
- * @author vincent
- */
-// FIXME 如果增加分布式部署，需要增加分布式锁，保证每个path只有一个服务在处理 或者 只开启一个节点的zk监听(压力会到一个节点上面)
+@Component
 @Slf4j
-public class InstanceAdaptor extends AbstractDefaultAdaptor {
+public class InstanceKafkaMonitor implements ApplicationListener<ApplicationStartedEvent> {
+
+    Map<String, String> instancePathMap = new HashMap<>(100);
 
     private static final String INSTANCE_PATH = "/config/log/pradar/client/";
-    private static String serverUrl = System.getProperty("instance.amdb.server.url");
 
     /**
      * path-> appName+"#"+ip+"#"+pid
      */
     private static final Map<String, String> INSTANCEID_CACHE = new HashMap<>();
 
+    @Resource
     private AppService appService;
-
+    @Resource
     private AppInstanceService appInstanceService;
-
-    private AdaptorTemplate adaptorTemplate;
+    @Resource
     private AppInstanceStatusService appInstanceStatusService;
+    @Resource
     private TAmdbAgentConfigDOMapper agentConfigDOMapper;
 
-    public InstanceAdaptor() {
 
+    @Override
+    public void onApplicationEvent(ApplicationStartedEvent applicationStartedEvent) {
+        log.info("开始准备监听config-log-pradar-client的消息");
+        Executors.newCachedThreadPool().execute(() -> {
+            MessageReceiveService messageReceiveService = new KafkaSendServiceFactory().getKafkaMessageReceiveInstance();
+            log.info("开始准备监听config-log-pradar-client的消息，开始设置topic");
+            messageReceiveService.receive(Lists.newArrayList("stress-test-config-log-pradar-client"), new MessageReceiveCallBack() {
+                @Override
+                public void success(MessageEntity messageEntity) {
+                    log.info("收到config-log-pradar-client的消息，" + messageEntity);
+                    Map entityBody = messageEntity.getBody();
+                    Object appName = entityBody.get("appName");
+                    Object agentId = entityBody.get("agentId");
+                    Object tenantAppKey = entityBody.get("tenantAppKey");
+                    Object envCode = entityBody.get("envCode");
+                    if (appName == null) {
+                        log.warn("接收到的节点信息应用名为空，数据出现问题，接收到的数据为数据为:{}", JSON.toJSONString(entityBody));
+                        return;
+                    }
+                    if (agentId == null) {
+                        log.warn("接收到的节点信息agentId为空，数据出现问题，接收到的数据为数据为:{}", JSON.toJSONString(entityBody));
+                        return;
+                    }
+
+                    String instancePath = INSTANCE_PATH + appName + "/" + agentId + "/" + tenantAppKey + "/" + envCode;
+
+                    String body = JSON.toJSONString(entityBody);
+
+                    DataContext<InstanceModel> dataContext = new DataContext<>();
+                    dataContext.setPath(instancePath);
+                    InstanceModel instanceModel = JSON.parseObject(body, InstanceModel.class);
+                    instanceModel.setAppName(appName.toString());
+                    dataContext.setModel(instanceModel);
+
+                    if (instancePathMap.containsKey(instancePath)) {
+                        //如果应用节点信息没有任何更新，不重复处理本条数据
+                        String md5 = Md5Utils.md5(body);
+                        if (md5.equals(instancePathMap.get(instancePath))) {
+                            updateTime(dataContext);
+                            return;
+                        }
+                    }
+                    process(dataContext);
+                }
+
+                @Override
+                public void fail(String errorMessage) {
+                    log.error("节点信息接收kafka消息出现异常，errorMessage:{}", errorMessage);
+                }
+            });
+        });
+
+        Executors.newScheduledThreadPool(1).scheduleAtFixedRate((new Runnable() {
+            @Override
+            public void run() {
+//                long currentTimeMillis = System.currentTimeMillis();
+//                instancePathMap.forEach((instancePath, md5) -> {
+//                    //连续两分钟没有接收到该节点的信息，认为当前节点已下线
+//                    DataContext<InstanceModel> dataContext = new DataContext<>();
+//                    dataContext.setPath(instancePath);
+//                    process(dataContext);
+//                    instancePathMap.remove(instancePath);
+//                });
+                batchOffline();
+            }
+        }),20,60, TimeUnit.SECONDS);
     }
 
 
-    @Override
-    public void addConnector() {
-        adaptorTemplate.addConnector(Connector.ConnectorType.ZOOKEEPER_NODE);
-    }
-
-    /**
-     *
-     */
-    @Override
-    public void registor() {
-
-    }
-
-
-    @Override
-    public void setAdaptorTemplate(AdaptorTemplate adaptorTemplate) {
-        this.adaptorTemplate = adaptorTemplate;
-    }
-
-
-    @Override
-    public boolean close() throws Exception {
-        return false;
-    }
-
-    @Override
-    public Object process(DataContext dataContext) {
+    public Object process(DataContext<InstanceModel> dataContext) {
         String path[] = dataContext.getPath().replaceAll(INSTANCE_PATH, "").split("/");
         String appName = path[0];
-        InstanceModel instanceModel = (InstanceModel) dataContext.getModel();
+        InstanceModel instanceModel = dataContext.getModel();
         String oldInstanceKey = INSTANCEID_CACHE.get(dataContext.getPath());
         if (instanceModel != null) {
             instanceModel.buildDefaultValue(appName);
@@ -114,7 +147,6 @@ public class InstanceAdaptor extends AbstractDefaultAdaptor {
             // 说明节点被删除，执行实例下线
             if (oldInstanceKey != null) {
                 instanceOffline(oldInstanceKey);
-                //instanceIdCache.remove(dataContext.getPath());
 
                 String agentId = path[1];
                 removeConfig(appName, agentId);
@@ -254,16 +286,7 @@ public class InstanceAdaptor extends AbstractDefaultAdaptor {
         amdbAppInstance.setUserAppKey(instanceModel.getTenantAppKey());
         amdbAppInstance.setEnvCode(instanceModel.getEnvCode());
 
-//        if (instanceModel.getErrorCode() != null && instanceModel.getErrorCode().trim().length() > 0) {
-//            Map<String, Map<String, Object>> errorMsgInfos = new HashMap<String, Map<String, Object>>();
-//            Map<String, Object> errorMsgInfo = new HashMap<String, Object>();
-//            errorMsgInfo.put("msg", instanceModel.getErrorMsg());
-//            errorMsgInfo.put("time", new Date());
-//            errorMsgInfos.put(instanceModel.getErrorCode(), errorMsgInfo);
-//            ext.put("errorMsgInfos", errorMsgInfos);
-//        } else {
-//            ext.put("errorMsgInfos", "{}");
-//        }
+
         AppInstanceExtDTO ext = new AppInstanceExtDTO();
         Map<String, String> simulatorConfig = JSON.parseObject(instanceModel.getSimulatorFileConfigs(), new TypeReference<Map<String, String>>() {
         });
@@ -340,6 +363,58 @@ public class InstanceAdaptor extends AbstractDefaultAdaptor {
         return oldAmdbAppInstance;
     }
 
+    private void updateTime(DataContext<InstanceModel> dataContext) {
+        InstanceModel instanceModel = dataContext.getModel();
+        String agentId = instanceModel.getAgentId();
+        String envCode = instanceModel.getEnvCode();
+        String appName = instanceModel.getAppName();
+        String address = instanceModel.getAddress();
+        String pid = instanceModel.getPid();
+        String tenantAppKey = instanceModel.getTenantAppKey();
+
+        TAmdbAppInstanceDO selectParam = new TAmdbAppInstanceDO();
+        // 如果AgentId被修改，则用原先的ID来更新
+        selectParam.setAppName(appName);
+        selectParam.setIp(address);
+        selectParam.setPid(pid);
+        TAmdbAppInstanceDO amdbAppInstanceDO = appInstanceService.selectOneByParam(selectParam);
+        if (amdbAppInstanceDO != null) {
+            amdbAppInstanceDO.setGmtModify(new Date());
+            appInstanceService.update(amdbAppInstanceDO);
+        }
+
+        TAmdbAppInstanceStatusDO tAmdbAppInstanceStatusDO = new TAmdbAppInstanceStatusDO();
+        tAmdbAppInstanceStatusDO.setAppName(appName);
+        tAmdbAppInstanceStatusDO.setAgentId(agentId);
+        tAmdbAppInstanceStatusDO.setEnvCode(envCode);
+        tAmdbAppInstanceStatusDO.setUserAppKey(tenantAppKey);
+        TAmdbAppInstanceStatusDO exist = appInstanceStatusService.selectOneByParam(tAmdbAppInstanceStatusDO);
+        if (exist != null){
+            exist.setGmtModify(new Date());
+            appInstanceStatusService.update(exist);
+        }
+
+        Example example = new Example(TAmdbAppInstanceStatusDO.class);
+        Example.Criteria criteria = example.createCriteria();
+        criteria.andEqualTo("appName", appName);
+        criteria.andEqualTo("agentId", agentId);
+        List<TAmdbAgentConfigDO> tAmdbAgentConfigDOS = agentConfigDOMapper.selectByExample(example);
+        if (!CollectionUtils.isEmpty(tAmdbAgentConfigDOS)){
+            tAmdbAgentConfigDOS.forEach(config -> {
+                config.setGmtCreate(new Date());
+                agentConfigDOMapper.updateByPrimaryKey(config);
+            });
+        }
+    }
+
+    private void batchOffline(){
+        Calendar instance = Calendar.getInstance();
+        instance.add(Calendar.MINUTE, -3);
+        appInstanceService.batchOfflineByTime(instance.getTime());
+        appInstanceStatusService.batchOfflineByTime(instance.getTime());
+        agentConfigDOMapper.batchOfflineByTime(instance.getTime());
+    }
+
     /**
      * 执行实例下线
      *
@@ -369,29 +444,6 @@ public class InstanceAdaptor extends AbstractDefaultAdaptor {
         appInstanceStatusService.deleteByParams(request);
     }
 
-
-    /**
-     * @param config
-     */
-    @Override
-    public void addConfig(Map<String, Object> config) {
-        super.addConfig(config);
-
-        /**
-         *     private AppService appService;
-         *
-         *     private AppInstanceService appInstanceService;
-         */
-        if (!config.containsKey("appService") || !config.containsKey("appInstanceService")) {
-            throw new IllegalArgumentException("AppService and appInstanceService is not init.");
-        }
-        this.appService = (AppService) config.get("appService");
-        this.appInstanceService = (AppInstanceService) config.get("appInstanceService");
-        //todo check
-        this.appInstanceStatusService = (AppInstanceStatusService) config.get("appInstanceStatusService");
-        this.agentConfigDOMapper = (TAmdbAgentConfigDOMapper) config.get("agentConfigDOMapper");
-
-    }
 
     private void dealWithProbeStatusModel(InstanceModel instanceModel) {
         //探针状态转换
@@ -523,4 +575,5 @@ public class InstanceAdaptor extends AbstractDefaultAdaptor {
         }
         return ret;
     }
+
 }

@@ -23,6 +23,7 @@ import io.shulie.amdb.request.query.AppInstanceStatusQueryRequest;
 import io.shulie.amdb.response.instance.AmdbAppInstanceStautsResponse;
 import io.shulie.amdb.response.instance.AmdbAppInstanceStautsSumResponse;
 
+import java.util.Date;
 import java.util.List;
 
 public interface AppInstanceStatusService {
@@ -68,4 +69,7 @@ public interface AppInstanceStatusService {
      * @return
      */
     AgentStatusStatInfo countStatus(AppInstanceStatusQueryRequest param);
+
+    void batchOfflineByTime(Date date);
+
 }

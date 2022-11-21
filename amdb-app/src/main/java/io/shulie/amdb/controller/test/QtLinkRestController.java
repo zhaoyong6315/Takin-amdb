@@ -30,13 +30,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/amdb/qtLink")
 public class QtLinkRestController {
-    @Autowired
-    ClientAdaptorStarter adaptorStarter;
+//    @Autowired
+//    ClientAdaptorStarter adaptorStarter;
 
     @RequestMapping(path = "/restartAdaptor", method = RequestMethod.POST)
     public Response restartAdaptor() {
         try {
-            adaptorStarter.restart();
+//            adaptorStarter.restart();
             return Response.emptySuccess();
         } catch (Exception e) {
             log.error("restart fail", e);

@@ -11,6 +11,7 @@ import io.shulie.surge.data.common.zk.ZkClientSpec;
 import io.shulie.surge.data.runtime.common.zk.NetflixCuratorZkClientFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -23,12 +24,15 @@ public class VersionRegister implements ApplicationListener<ApplicationStartedEv
 
     private static final String REGISTER_PATH = "/pradar/config/version/amdb";
 
+    @Value("${zookeeper.server}")
+    private String zkPath;
+
     @Override
     public void onApplicationEvent(ApplicationStartedEvent event) {
-        String zk_servers = System.getProperty("zookeeper.servers", "default.zookeeper:2181");
+//        String zk_servers = System.getProperty("zookeeper.servers", "default.zookeeper:2181");
         int connection_timeout = NumberUtils.toInt(System.getProperty("zookeeper.connection.timeout", "30000"));
         int session_timeout = NumberUtils.toInt(System.getProperty("zookeeper.session.timeout", "20000"));
-        ZkClientSpec spec = new ZkClientSpec(zk_servers);
+        ZkClientSpec spec = new ZkClientSpec(zkPath);
         spec.setConnectionTimeoutMillis(connection_timeout).setSessionTimeoutMillis(session_timeout);
         try {
             ZkClient zkClient = new NetflixCuratorZkClientFactory().create(spec);

@@ -28,6 +28,7 @@ import io.shulie.amdb.request.query.TAmdbAppInstanceQueryRequest;
 import io.shulie.amdb.response.instance.AmdbAppInstanceResponse;
 import io.shulie.amdb.response.instance.InstanceErrorInfoResponse;
 
+import java.util.Date;
 import java.util.List;
 
 public interface AppInstanceService {
@@ -90,4 +91,6 @@ public interface AppInstanceService {
      * @return
      */
     Response<List<AppInfo>> queryAppInfo(AppInfoQueryRequest request);
+
+    void batchOfflineByTime(Date time);
 }

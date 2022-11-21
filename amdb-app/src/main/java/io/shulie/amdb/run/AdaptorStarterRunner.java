@@ -24,7 +24,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
-@Component
+//@Component
 @Slf4j
 @Order(value = 1000)
 public class AdaptorStarterRunner implements ApplicationRunner {
@@ -32,7 +32,7 @@ public class AdaptorStarterRunner implements ApplicationRunner {
     @Value("${config.adaptor.instance.open}")
     private boolean isOpen;
     @Autowired
-    ClientAdaptorStarter starter;
+//    ClientAdaptorStarter starter;
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
@@ -41,7 +41,7 @@ public class AdaptorStarterRunner implements ApplicationRunner {
             return;
         }
         try {
-            starter.start();
+//            starter.start();
         } catch (Exception e) {
             log.error("adaptor启动失败", e);
         }

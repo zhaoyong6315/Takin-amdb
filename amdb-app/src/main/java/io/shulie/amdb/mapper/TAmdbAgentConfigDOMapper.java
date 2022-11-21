@@ -21,6 +21,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 import tk.mybatis.mapper.common.Mapper;
 
+import java.util.Date;
 import java.util.List;
 
 public interface TAmdbAgentConfigDOMapper extends Mapper<TAmdbAgentConfigDO> {
@@ -40,4 +41,7 @@ public interface TAmdbAgentConfigDOMapper extends Mapper<TAmdbAgentConfigDO> {
 
     @Delete("delete from t_amdb_agent_config where 1=1")
     void deleteAll();
+
+    @Delete("delete from t_amdb_agent_config where 1=1 and gmt_create <![CDATA[ <= ]]> #{time}")
+    void batchOfflineByTime(Date time);
 }

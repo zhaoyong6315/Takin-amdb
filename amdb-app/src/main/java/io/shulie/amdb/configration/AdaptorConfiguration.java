@@ -28,14 +28,11 @@ import org.springframework.context.annotation.Configuration;
 import java.util.HashMap;
 import java.util.Map;
 
-@Configuration
+//@Configuration
 public class AdaptorConfiguration {
 
     @Value("${zookeeper.server}")
     private String zkPath;
-    private String redisUrl;
-    private String redisPassword;
-    private String redisPort;
     @Autowired
     private AppService appService;
     @Autowired
@@ -53,9 +50,6 @@ public class AdaptorConfiguration {
         config.put("appInstanceStatusService", appInstanceStatusService);
         config.put("agentConfigDOMapper", agentConfigDOMapper);
         System.setProperty("zookeeper.servers", zkPath);
-        System.setProperty("redis.url", redisUrl);
-        System.setProperty("redis.password", redisPassword);
-        System.setProperty("redis.port", redisPort);
         return new ClientAdaptorStarter(config);
     }
 }
