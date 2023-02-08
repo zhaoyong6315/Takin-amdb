@@ -1,6 +1,5 @@
 package io.shulie.amdb.service.impl;
 
-import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import io.shulie.amdb.common.Response;
 import io.shulie.amdb.exception.AmdbExceptionEnums;
@@ -12,14 +11,12 @@ import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.assertj.core.util.Lists;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * @author Sunsy
@@ -32,8 +29,8 @@ import java.util.stream.Collectors;
 public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
     private static String BLANK = " ";
 
-    @Resource(name = "clickhouseJdbcTemplate")
-    private JdbcTemplate jdbcTemplate;
+    @Resource
+    private ClickHouseSupport clickHouseSupport;
 
     @Override
     public Response<List<Map<String, Object>>> queryObjectByConditions(ClickhouseQueryRequest request) {
@@ -42,7 +39,7 @@ public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
         if (StringUtils.isNotBlank(querySql)) {
             log.info("clickHouse query sql:{}", querySql);
             try {
-                resultList = this.queryForList(querySql);
+                resultList = clickHouseSupport.queryForList(querySql);
             } catch (Exception e) {
                 log.error("query clickHouse catch exception:{},{}", e, e.getStackTrace());
                 //查询sql，出现异常，返回空值
@@ -64,7 +61,7 @@ public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
         if (StringUtils.isNotBlank(querySql)) {
             log.info("clickHouse query sql:{}", querySql);
             try {
-                List<T> tList = this.queryForList(querySql, clazz);
+                List<T> tList = clickHouseSupport.queryForList(querySql, clazz);
                 if (CollectionUtils.isEmpty(tList)){
                     log.info("查询出来内容为空，sql为:{}", querySql);
                 }
@@ -199,18 +196,6 @@ public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
             return "*";
         }
         return StringUtils.join(aliasList, ",");
-    }
-
-    private List<Map<String, Object>> queryForList(String sql) {
-        return jdbcTemplate.queryForList(sql);
-    }
-
-    private <T> List<T> queryForList(String sql, Class<T> clazz) {
-        List<Map<String, Object>> resultList = queryForList(sql);
-        if (resultList.size() == 0) {
-            return new ArrayList<>();
-        }
-        return resultList.stream().map(result -> JSONObject.parseObject(JSON.toJSON(result).toString(), clazz)).collect(Collectors.toList());
     }
 
 }
