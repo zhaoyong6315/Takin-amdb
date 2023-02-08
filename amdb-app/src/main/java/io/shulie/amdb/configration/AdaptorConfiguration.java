@@ -31,7 +31,7 @@ import java.util.Map;
 //@Configuration
 public class AdaptorConfiguration {
 
-    @Value("${zookeeper.server}")
+    @Value("${zookeeper.server:}")
     private String zkPath;
     @Autowired
     private AppService appService;

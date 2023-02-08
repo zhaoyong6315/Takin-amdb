@@ -1,24 +1,25 @@
 package io.shulie.amdb.service.impl;
 
-import com.google.common.collect.Maps;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import io.shulie.amdb.common.Response;
 import io.shulie.amdb.exception.AmdbExceptionEnums;
-import io.shulie.amdb.request.query.InfluxDbQueryRequest;
-import io.shulie.amdb.service.InfluxDbQueryService;
-import io.shulie.amdb.utils.InfluxDBManager;
+import io.shulie.amdb.request.query.ClickhouseQueryRequest;
+import io.shulie.amdb.service.ClickhouseQueryService;
+import io.shulie.surge.data.sink.clickhouse.ClickHouseSupport;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.assertj.core.util.Lists;
-import org.influxdb.dto.QueryResult;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * @author Sunsy
@@ -26,60 +27,60 @@ import java.util.Map;
  * @apiNode
  * @email sunshiyu@shulie.io
  */
-@Service("influxDbQueryServiceImpl")
+@Service("clickhouseQueryServiceImpl")
 @Slf4j
-public class InfluxDbQueryServiceImpl implements InfluxDbQueryService {
+public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
     private static String BLANK = " ";
-    private static String TIME_SUFFIX = "000000";
 
-    @Autowired
-    private InfluxDBManager influxDbManager;
+    @Resource(name = "clickhouseJdbcTemplate")
+    private JdbcTemplate jdbcTemplate;
 
     @Override
-    public Response<List<Map<String, Object>>> queryObjectByConditions(InfluxDbQueryRequest request) {
+    public Response<List<Map<String, Object>>> queryObjectByConditions(ClickhouseQueryRequest request) {
         List<Map<String, Object>> resultList = Lists.newArrayList();
         String querySql = buildQuerySql(request);
         if (StringUtils.isNotBlank(querySql)) {
-            log.info("influxdb query sql:{}", querySql);
-            List<QueryResult.Result> queryResult;
+            log.info("clickHouse query sql:{}", querySql);
             try {
-                queryResult = influxDbManager.query(querySql, request.getDatabase());
-                List<QueryResult.Series> list = queryResult.get(0).getSeries();
-                if (list != null) {
-                    for (QueryResult.Series result : list) {
-                        List columns = result.getColumns();
-                        List values = result.getValues();
-                        Map<String, String> tags = result.getTags();
-                        resultList.add(getQueryData(columns, values, tags));
-                    }
-                }
+                resultList = this.queryForList(querySql);
             } catch (Exception e) {
-                log.error("query influxdb catch exception:{},{}", e, e.getStackTrace());
-                return Response.fail(AmdbExceptionEnums.INFLUXDB_QUERY_SQL_EXECUTE_FAILED, e.getCause());
+                log.error("query clickHouse catch exception:{},{}", e, e.getStackTrace());
+                //查询sql，出现异常，返回空值
+                return Response.success(new ArrayList<>());
             }
 
+        } else {
+            log.info("拼接出来的sql为空，入参为:{}", JSONObject.toJSONString(request));
+        }
+        if (CollectionUtils.isEmpty(resultList)){
+            log.info("查询出来内容为空，sql为:{}", querySql);
         }
         return Response.success(resultList);
     }
 
-    /***整理列名、行数据***/
-    private Map<String, Object> getQueryData(List<String> columns, List<List<Object>> values, Map<String, String> tags) {
-        HashMap<String, Object> resultMap = Maps.newHashMap();
-        for (List<Object> list : values) {
-            if (MapUtils.isNotEmpty(tags)) {
-                resultMap.putAll(tags);
+    @Override
+    public <T> List<T> queryObjectByConditions(ClickhouseQueryRequest request, Class<T> clazz) {
+        String querySql = buildQuerySql(request);
+        if (StringUtils.isNotBlank(querySql)) {
+            log.info("clickHouse query sql:{}", querySql);
+            try {
+                List<T> tList = this.queryForList(querySql, clazz);
+                if (CollectionUtils.isEmpty(tList)){
+                    log.info("查询出来内容为空，sql为:{}", querySql);
+                }
+                return tList;
+            } catch (Exception e) {
+                log.error("query clickHouse catch exception:{},{}", e, e.getStackTrace());
+                return null;
             }
-            for (int i = 0; i < list.size(); i++) {
-                String propertyName = columns.get(i);//字段名
-                Object value = list.get(i);//相应字段值
-                resultMap.put(propertyName, value);
-            }
-
+        } else {
+            log.info("拼接出来的sql为空，入参为:{}", JSONObject.toJSONString(request));
         }
-        return resultMap;
+        return null;
     }
 
-    private String buildQuerySql(InfluxDbQueryRequest request) {
+
+    private String buildQuerySql(ClickhouseQueryRequest request) {
         StringBuilder sbuilder = new StringBuilder();
 
         sbuilder.append("select").append(BLANK);
@@ -95,15 +96,32 @@ public class InfluxDbQueryServiceImpl implements InfluxDbQueryService {
             sbuilder.append("*").append(BLANK);
         }
         sbuilder.append("from").append(BLANK);
-        sbuilder.append(request.getMeasurement()).append(BLANK);
-        sbuilder.append("where 1=1").append(BLANK);
-        if (request.getStartTime() > 0) {
-            sbuilder.append("and time >=").append(BLANK);
-            sbuilder.append(request.getStartTime()).append(TIME_SUFFIX).append(BLANK);
+
+        if (!request.getMeasurement().endsWith("_all")) {
+            sbuilder.append(request.getMeasurement()).append("_all").append(BLANK);
+        } else {
+            sbuilder.append(request.getMeasurement()).append(BLANK);
         }
-        if (request.getEndTime() > 0) {
+        sbuilder.append("where 1=1").append(BLANK);
+        if (request.getStartTime() > 0 && request.isStartTimeEqual()) {
+            sbuilder.append("and time >=").append(BLANK);
+            sbuilder.append(request.getStartTime()).append(BLANK);
+        }
+        if (request.getStartTime() > 0 && !request.isStartTimeEqual()) {
+            sbuilder.append("and time >").append(BLANK);
+            sbuilder.append(request.getStartTime()).append(BLANK);
+        }
+        if (request.getEndTime() > 0 && request.isEndTimeEqual()) {
             sbuilder.append("and time <=").append(BLANK);
-            sbuilder.append(request.getEndTime()).append(TIME_SUFFIX).append(BLANK);
+            sbuilder.append(request.getEndTime()).append(BLANK);
+        }
+        if (request.getEndTime() > 0 && !request.isEndTimeEqual()) {
+            sbuilder.append("and time <").append(BLANK);
+            sbuilder.append(request.getEndTime()).append(BLANK);
+        }
+        if (CollectionUtils.isNotEmpty(request.getNotNullWhere())) {
+            sbuilder.append("and").append(BLANK);
+            sbuilder.append(parseNotNullWhere(request.getNotNullWhere())).append(BLANK);
         }
         if (MapUtils.isNotEmpty(request.getWhereFilter())) {
             sbuilder.append("and").append(BLANK);
@@ -124,6 +142,14 @@ public class InfluxDbQueryServiceImpl implements InfluxDbQueryService {
             sbuilder.append("offset").append(BLANK).append(request.getOffset()).append(BLANK);
         }
         return sbuilder.toString();
+    }
+
+    private String parseNotNullWhere(List<String> notNullWhere) {
+        List<String> wheres = new ArrayList<>();
+        notNullWhere.forEach(where -> {
+            wheres.add(where + "is not null");
+        });
+        return StringUtils.join(wheres, " and ");
     }
 
     private String parseGroupBy(List<String> groupFields) {
@@ -173,6 +199,18 @@ public class InfluxDbQueryServiceImpl implements InfluxDbQueryService {
             return "*";
         }
         return StringUtils.join(aliasList, ",");
+    }
+
+    private List<Map<String, Object>> queryForList(String sql) {
+        return jdbcTemplate.queryForList(sql);
+    }
+
+    private <T> List<T> queryForList(String sql, Class<T> clazz) {
+        List<Map<String, Object>> resultList = queryForList(sql);
+        if (resultList.size() == 0) {
+            return new ArrayList<>();
+        }
+        return resultList.stream().map(result -> JSONObject.parseObject(JSON.toJSON(result).toString(), clazz)).collect(Collectors.toList());
     }
 
 }

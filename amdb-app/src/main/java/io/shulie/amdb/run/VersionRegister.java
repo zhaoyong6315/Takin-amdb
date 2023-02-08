@@ -18,28 +18,28 @@ import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
 
-@Component
+//@Component
 @Slf4j
 public class VersionRegister implements ApplicationListener<ApplicationStartedEvent> {
 
     private static final String REGISTER_PATH = "/pradar/config/version/amdb";
 
-    @Value("${zookeeper.server}")
+    @Value("${zookeeper.server:}")
     private String zkPath;
 
     @Override
     public void onApplicationEvent(ApplicationStartedEvent event) {
 //        String zk_servers = System.getProperty("zookeeper.servers", "default.zookeeper:2181");
-        int connection_timeout = NumberUtils.toInt(System.getProperty("zookeeper.connection.timeout", "30000"));
-        int session_timeout = NumberUtils.toInt(System.getProperty("zookeeper.session.timeout", "20000"));
-        ZkClientSpec spec = new ZkClientSpec(zkPath);
-        spec.setConnectionTimeoutMillis(connection_timeout).setSessionTimeoutMillis(session_timeout);
-        try {
-            ZkClient zkClient = new NetflixCuratorZkClientFactory().create(spec);
-            registerVersion(zkClient);
-        } catch (Exception e) {
-            log.error("注册版本信息异常", e);
-        }
+//        int connection_timeout = NumberUtils.toInt(System.getProperty("zookeeper.connection.timeout", "30000"));
+//        int session_timeout = NumberUtils.toInt(System.getProperty("zookeeper.session.timeout", "20000"));
+//        ZkClientSpec spec = new ZkClientSpec(zkPath);
+//        spec.setConnectionTimeoutMillis(connection_timeout).setSessionTimeoutMillis(session_timeout);
+//        try {
+//            ZkClient zkClient = new NetflixCuratorZkClientFactory().create(spec);
+//            registerVersion(zkClient);
+//        } catch (Exception e) {
+//            log.error("注册版本信息异常", e);
+//        }
     }
 
     private void registerVersion(ZkClient zkClient) throws Exception {

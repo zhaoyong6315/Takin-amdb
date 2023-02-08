@@ -14,33 +14,32 @@
  */
 
 package io.shulie.amdb.service.impl;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 
 import io.shulie.amdb.common.Response;
 import io.shulie.amdb.constant.E2eConstants;
+import io.shulie.amdb.entity.TraceE2eAssertMetricsAll;
+import io.shulie.amdb.entity.TraceMetricsAll;
 import io.shulie.amdb.exception.AmdbExceptionEnums;
-import io.shulie.amdb.request.query.E2EBaseRequest;
-import io.shulie.amdb.request.query.E2ENodeMetricsRequest;
-import io.shulie.amdb.request.query.MetricsQueryRequest;
-import io.shulie.amdb.request.query.TraceMetricsRequest;
+import io.shulie.amdb.request.query.*;
 import io.shulie.amdb.response.e2e.E2ENodeErrorInfosResponse;
 import io.shulie.amdb.response.e2e.E2ENodeMetricsResponse;
 import io.shulie.amdb.response.e2e.E2EStatisticsResponse;
 import io.shulie.amdb.response.metrics.MetricsResponse;
-import io.shulie.amdb.service.MetricsService;
-import io.shulie.amdb.service.TraceMetricsService;
-import io.shulie.amdb.utils.InfluxDBManager;
+import io.shulie.amdb.service.*;
 import io.shulie.amdb.utils.StringUtil;
 import io.shulie.surge.data.common.utils.Pair;
 import io.shulie.surge.data.deploy.pradar.parser.utils.Md5Utils;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.influxdb.dto.QueryResult;
 import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -56,9 +55,8 @@ public class TraceMetricsServiceImpl implements TraceMetricsService {
     @Autowired
     private MetricsService metricsService;
 
-    @Autowired
-    private InfluxDBManager influxDbManager;
-
+    @Resource
+    private ClickhouseQueryService clickhouseQueryService;
     /**
      * 默认延迟2分钟
      */
@@ -71,50 +69,64 @@ public class TraceMetricsServiceImpl implements TraceMetricsService {
         long startTime = timeDelay(param.getStartTime());
         long endTime = timeDelay(param.getEndTime());
 
-        String edgeIds[] = param.getEdgeIds().split(",");
+        String[] edgeIds = param.getEdgeIds().split(",");
         int clusterTest = param.getClusterTest();
-        StringBuffer buffer = new StringBuffer();
-        buffer.append("select edgeId,sqlStatement,maxRt,avgRt,totalCount,traceId,appName,method,rpcType,service from trace_metrics where" +
-                " time >= " + startTime + "000000 and time < " + endTime + "000000 and sqlStatement != 'null' and (");
-        boolean isFirst = true;
-        for (String edgeId : edgeIds) {
-            if (StringUtils.isNoneBlank(edgeId)) {
-                if (isFirst) {
-                    buffer.append(" edgeId='" + edgeId + "' ");
-                    isFirst = false;
-                } else {
-                    buffer.append(" or edgeId='" + edgeId + "' ");
-                }
-            }
+        ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
+        clickhouseQueryRequest.setMeasurement("trace_metrics_all");
+        clickhouseQueryRequest.setStartTime(startTime);
+        clickhouseQueryRequest.setStartTimeEqual(true);
+        clickhouseQueryRequest.setEndTime(endTime);
+        Map<String, Object> whereFilter = new HashMap<>();
+        clickhouseQueryRequest.setWhereFilter(whereFilter);
+        List<String> notNullWhere = new ArrayList<>();
+        clickhouseQueryRequest.setNotNullWhere(notNullWhere);
+        notNullWhere.add("sqlStatement");
+        if (edgeIds.length == 1){
+            whereFilter.put("edgeId", edgeIds[0]);
+        }else {
+            whereFilter.put("edgeId", edgeIds);
         }
-        buffer.append(")");
-        switch (clusterTest) {
-            case 0:
-                buffer.append(" and clusterTest = 'false'");
-                break;
-            case 1:
-                buffer.append(" and clusterTest = 'true'");
-                break;
-            default:
-                break;
+        if (clusterTest == 0 || clusterTest == 1){
+            whereFilter.put("clusterTest", 0 == clusterTest ? "false" : "true");
         }
+
         if (StringUtils.isNotBlank(param.getTenantAppKey())) {
-            buffer.append(" and tenantAppKey='").append(param.getTenantAppKey()).append("'");
+            whereFilter.put("tenantAppKey", param.getTenantAppKey());
         }
         if (StringUtils.isNotBlank(param.getEnvCode())) {
-            buffer.append(" and envCode='").append(param.getEnvCode()).append("'");
+            whereFilter.put("envCode", param.getEnvCode());
         }
-        buffer.append(" TZ('Asia/Shanghai')");
-        log.info("查询sql:{}", buffer);
+
         List<TraceMetrics> resultList = new ArrayList<>();
-        List<QueryResult.Result> aggrerateResult = influxDbManager.query(buffer.toString());
-        List<QueryResult.Series> list = aggrerateResult.get(0).getSeries();
-        if (list != null) {
-            for (QueryResult.Series result : list) {
-                List columns = result.getColumns();
-                List values = result.getValues();
-                resultList = getQueryData(columns, values);
-            }
+        List<TraceMetricsAll> traceMetricsAlls = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest, TraceMetricsAll.class);
+        if (CollectionUtils.isNotEmpty(traceMetricsAlls)) {
+            traceMetricsAlls.forEach(traceMetricsAll -> {
+                TraceMetrics traceMetrics = new TraceMetrics();
+                traceMetrics.setTime(traceMetricsAll.getTime() + "");
+                traceMetrics.setAppName(traceMetricsAll.getAppName());
+                traceMetrics.setAvgRt(traceMetricsAll.getAvgRt() == null ? 0 : traceMetricsAll.getAvgRt().intValue());
+                traceMetrics.setAvgTps(traceMetricsAll.getAvgTps() == null ? 0 : traceMetricsAll.getAvgTps().intValue());
+                traceMetrics.setClusterTest("true".equals(traceMetricsAll.getClusterTest()));
+                traceMetrics.setE2eErrorCount(traceMetricsAll.getE2eErrorCount());
+                traceMetrics.setE2eSuccessCount(traceMetricsAll.getE2eSuccessCount());
+                traceMetrics.setEdgeId(traceMetricsAll.getEdgeId());
+                traceMetrics.setErrorCount(traceMetricsAll.getErrorCount());
+                traceMetrics.setHitCount(traceMetricsAll.getHitCount());
+                traceMetrics.setLog_time(traceMetricsAll.getLogTime());
+                traceMetrics.setMaxRt(traceMetricsAll.getMaxRt());
+                traceMetrics.setMethod(traceMetricsAll.getMethod());
+                traceMetrics.setMiddlewareName(traceMetricsAll.getMiddlewareName());
+                traceMetrics.setRpcType(traceMetricsAll.getRpcType() == null ? 0 : Integer.parseInt(traceMetricsAll.getRpcType()));
+                traceMetrics.setService(traceMetricsAll.getService());
+                traceMetrics.setSqlStatement(traceMetricsAll.getSqlStatement());
+                traceMetrics.setSuccessCount(traceMetricsAll.getSuccessCount());
+                traceMetrics.setTotal(traceMetricsAll.getTotal());
+                traceMetrics.setTotalCount(traceMetricsAll.getTotalCount());
+                traceMetrics.setTotalRt(traceMetricsAll.getTotalRt());
+                traceMetrics.setTotalTps(traceMetricsAll.getTotalTps());
+                traceMetrics.setTraceId(traceMetricsAll.getTraceId());
+                resultList.add(traceMetrics);
+            });
         }
         return resultList;
     }
@@ -417,36 +429,31 @@ public class TraceMetricsServiceImpl implements TraceMetricsService {
                 }
 
                 //根据异常类型查最近一次的traceId
-                List<QueryResult.Result> tmpResult = null;
+                List<TraceE2eAssertMetricsAll> tmpResult = null;
                 if (Objects.nonNull(errorInfo)) {
-                    if (hasEdgeId) {
-                        StringBuilder stringBuilder = new StringBuilder();
-                        if (nodeId.contains(",")) {
-                            stringBuilder.append("(");
-                            for (String single : nodeId.split(",")) {
-                                stringBuilder.append("nodeId='" + single + "'").append(" or ");
-                            }
-                            stringBuilder.delete(stringBuilder.lastIndexOf(" or "), stringBuilder.length());
-                            stringBuilder.append(")");
-                        } else {
-                            stringBuilder.append("nodeId = '" + nodeId + "'");
-                        }
+                    ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
+                    clickhouseQueryRequest.setMeasurement("trace_e2e_assert_metrics_all");
+                    Map<String, Object> whereFilter = new HashMap<>();
+                    clickhouseQueryRequest.setWhereFilter(whereFilter);
+                    clickhouseQueryRequest.setLimitRows(1L);
 
-                        tmpResult = influxDbManager.query("select traceId from " + E2eConstants.MEARSUREMENT_TRACE_E2E_ASSERT_METRICS + " where time >= " + startTime + "000000 and time < " + endTime + "000000 and exceptionType='" + exceptionType + "' and " + stringBuilder + " order by time desc limit 1");
+                    if (hasEdgeId && nodeId != null) {
+                        if (nodeId.contains(",")) {
+                            String[] split = nodeId.split(",");
+                            whereFilter.put("nodeId", Arrays.asList(split));
+                        } else {
+                            whereFilter.put("nodeId", nodeId);
+                        }
                     } else {
-                        StringBuilder stringBuilder = new StringBuilder();
-                        stringBuilder.append("parsedAppName = '" + params[0] + "'");
-                        stringBuilder.append(" and parsedServiceName = '" + params[1] + "'");
-                        stringBuilder.append(" and parsedMethod = '" + params[2] + "'");
-                        stringBuilder.append(" and rpcType = '" + params[3] + "' ");
-                        tmpResult = influxDbManager.query("select traceId from " + E2eConstants.MEARSUREMENT_TRACE_E2E_ASSERT_METRICS + " where time >= " + startTime + "000000 and time < " + endTime + "000000 and exceptionType='" + exceptionType + "' and " + stringBuilder + " order by time desc limit 1");
+                        whereFilter.put("parsedAppName", params[0]);
+                        whereFilter.put("parsedServiceName", params[1]);
+                        whereFilter.put("parsedMethod", params[2]);
+                        whereFilter.put("rpcType", params[3]);
                     }
 
+                    tmpResult = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest, TraceE2eAssertMetricsAll.class);
                     if (CollectionUtils.isNotEmpty(tmpResult)) {
-                        List<QueryResult.Series> tmpList = tmpResult.get(0).getSeries();
-                        if (CollectionUtils.isNotEmpty(tmpList)) {
-                            errorInfo.setTraceId(StringUtil.parseStr(tmpList.get(0).getValues().get(0).get(1)));
-                        }
+                        errorInfo.setTraceId(tmpResult.get(0).getTraceId());
                     } else {
                         errorInfo.setTraceId("");
                     }

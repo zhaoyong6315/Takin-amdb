@@ -20,26 +20,24 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import io.shulie.amdb.adaptors.common.Pair;
+import io.shulie.amdb.common.Response;
 import io.shulie.amdb.dao.ITraceDao;
 import io.shulie.amdb.entity.TAMDBPradarLinkConfigDO;
 import io.shulie.amdb.entity.TAmdbPradarLinkEdgeDO;
+import io.shulie.amdb.entity.TraceMetricsAll;
 import io.shulie.amdb.mapper.PradarLinkConfigMapper;
 import io.shulie.amdb.mapper.PradarLinkEdgeMapper;
-import io.shulie.amdb.request.query.MetricsDetailQueryRequest;
-import io.shulie.amdb.request.query.MetricsFromInfluxdbQueryRequest;
-import io.shulie.amdb.request.query.MetricsFromInfluxdbRequest;
-import io.shulie.amdb.request.query.MetricsQueryRequest;
+import io.shulie.amdb.request.query.*;
 import io.shulie.amdb.response.metrics.MetricsDetailResponse;
 import io.shulie.amdb.response.metrics.MetricsResponse;
+import io.shulie.amdb.service.ClickhouseQueryService;
 import io.shulie.amdb.service.MetricsService;
-import io.shulie.amdb.utils.InfluxDBManager;
 import io.shulie.surge.data.deploy.pradar.parser.PradarLogType;
+import io.shulie.surge.data.sink.clickhouse.ClickHouseSupport;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.influxdb.dto.QueryResult;
 import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -61,18 +59,17 @@ import java.util.stream.Collectors;
 @Slf4j
 public class MetricsServiceImpl implements MetricsService {
 
-    @Autowired
-    private InfluxDBManager influxDbManager;
-
     @Resource
     PradarLinkEdgeMapper pradarLinkEdgeMapper;
-
     @Resource
     PradarLinkConfigMapper pradarLinkConfigMapper;
-
+    @Resource
+    private ClickHouseSupport clickHouseSupport;
     @Autowired
     @Qualifier("traceDaoImpl")
     ITraceDao traceDao;
+    @Resource
+    private ClickhouseQueryService clickhouseQueryService;
 
     @Override
     public Map<String, MetricsResponse> getMetrics(MetricsQueryRequest request) {
@@ -81,90 +78,51 @@ public class MetricsServiceImpl implements MetricsService {
         //遍历每一个tag进行查询
         request.getTagMapList().forEach(tagMap -> {
             List<Map<String, Object>> resultList = new ArrayList<>();
-
+            String tableName = request.getMeasurementName().endsWith("_all") ? request.getMeasurementName() : request.getMeasurementName() + "_all";
             //构造聚合指标查询sql
             String aggrerateSql = "select " + parseAliasFields(request.getFieldMap()) +
-                    " from  " + request.getMeasurementName() + " where " + parseWhereFilter(tagMap) + " and time >= " +
-                    formatTimestamp(request.getStartTime()) + " and time < " + formatTimestamp(request.getEndTime()) + " ";
+                    " from  " + tableName + " where " + parseWhereFilter(tagMap) + " and time >= " +
+                    request.getStartTime() + " and time < " + request.getEndTime() + " ";
             aggrerateSql += parseGroupBy(request.getGroups());
 
-            //log.info("聚合指标查询sql:{}", aggrerateSql);
-            List<QueryResult.Result> aggrerateResult = influxDbManager.query(aggrerateSql);
-
+            log.info("聚合指标查询sql:{}", aggrerateSql);
+            List<Map<String, Object>> aggrerateResultList = clickHouseSupport.queryForList(aggrerateSql);
             //构造非聚合指标查询sql
-            List<QueryResult.Result> nonAggrerateResult = null;
+            List<Map<String, Object>> nonAggrerateResult = null;
             if (request.getNonAggrerateFieldMap() != null) {
                 String nonAggrerateSql = "select " + parseAliasFields(request.getNonAggrerateFieldMap()) +
-                        " from  " + request.getMeasurementName() + " where " + parseWhereFilter(tagMap) + " and time >= " +
-                        formatTimestamp(request.getStartTime()) + " and time < " + formatTimestamp(request.getEndTime());
-                //log.info("非聚合指标查询sql:{}", nonAggrerateSql);
-                nonAggrerateResult = influxDbManager.query(nonAggrerateSql);
+                        " from  " + tableName + " where " + parseWhereFilter(tagMap) + " and time >= " +
+                        request.getStartTime() + " and time < " + request.getEndTime();
+                log.info("非聚合指标查询sql:{}", nonAggrerateSql);
+                nonAggrerateResult = clickHouseSupport.queryForList(nonAggrerateSql);
             }
-
-            //处理聚合指标
-            aggrerateResult.stream().filter((internalResult) -> {
-                return Objects.nonNull(internalResult) && Objects.nonNull(internalResult.getSeries());
-            }).forEach((internalResult) -> {
-                internalResult.getSeries().stream().filter((series) -> {
-                    return series.getName().equals(request.getMeasurementName());
-                }).forEachOrdered((series) -> {
-                    List<Map<String, Object>> tmpResult = new ArrayList<>();
-                    MetricsResponse response = new MetricsResponse();
-                    LinkedHashMap<String, String> resultTagMap = new LinkedHashMap<>();
-                    resultTagMap.putAll(tagMap);
-                    if (MapUtils.isNotEmpty(series.getTags())) {
-                        String groupFields[] = request.getGroups().split(",");
-                        for (String groupField : groupFields) {
-                            resultTagMap.put(groupField, series.getTags().get(groupField));
-                        }
+            aggrerateResultList.forEach(aggrerateResult -> {
+                List<Map<String, Object>> tmpResult = new ArrayList<>();
+                MetricsResponse response = new MetricsResponse();
+                LinkedHashMap<String, String> resultTagMap = new LinkedHashMap<>(tagMap);
+                if (request.getGroups() != null) {
+                    String[] groupFields = request.getGroups().split(",");
+                    for (String groupField : groupFields) {
+                        resultTagMap.put(groupField, aggrerateResult.get(groupField) == null ? null : aggrerateResult.get(groupField).toString());
                     }
-
-                    Iterator iterable = series.getValues().iterator();
-                    while (iterable.hasNext()) {
-                        Map<String, Object> result = new HashMap<>();
-                        List<Object> row = (List) iterable.next();
-                        for (int i = 0; i < series.getColumns().size(); i++) {
-                            String column = series.getColumns().get(i);
-                            result.put(column, row.get(i));
-                        }
-                        tmpResult.add(result);
-                    }
-                    response.setTags(resultTagMap);
-                    response.setTimes(request.getEndTime() - request.getStartTime());
-                    if (!tmpResult.isEmpty()) {
-                        resultList.addAll(tmpResult);
-                        response.setValue(tmpResult);
-                        responseList.put(StringUtils.join(response.getTags().values(), "|"), response);
-                    }
-                });
+                }
+                response.setTags(resultTagMap);
+                response.setTimes(request.getEndTime() - request.getStartTime());
+                tmpResult.add(aggrerateResult);
+                resultList.addAll(tmpResult);
+                response.setValue(tmpResult);
+                responseList.put(StringUtils.join(response.getTags().values(), "|"), response);
             });
 
             //如果要合并结果集,上面的聚合查询不能带group,可能会造成数据匹配错乱
-            if (!resultList.isEmpty() && nonAggrerateResult != null && request.getGroups() == null) {
-                nonAggrerateResult.stream().filter((internalResult) -> {
-                    return Objects.nonNull(internalResult) && Objects.nonNull(internalResult.getSeries());
-                }).forEach((internalResult) -> {
-                    internalResult.getSeries().stream().filter((series) -> {
-                        return series.getName().equals(request.getMeasurementName());
-                    }).forEachOrdered((series) -> {
-
-                        Iterator iterable = series.getValues().iterator();
-                        while (iterable.hasNext()) {
-                            Map<String, Object> result = new HashMap<>();
-                            List<Object> row = (List) iterable.next();
-                            for (int i = 0; i < series.getColumns().size(); i++) {
-                                String column = series.getColumns().get(i);
-                                result.put(column, row.get(i));
-                            }
-                            //引用传递
-                            Map<String, Object> aggrerateMap = resultList.get(0);
-                            aggrerateMap.putAll(result);
-                        }
-                    });
+            if (!resultList.isEmpty() && CollectionUtils.isNotEmpty(nonAggrerateResult) && request.getGroups() == null) {
+                nonAggrerateResult.forEach(result -> {
+                    Map<String, Object> aggrerateMap = resultList.get(0);
+                    aggrerateMap.putAll(result);
                 });
             }
         });
-        //log.info("指标查询合并结果:{}", responseList);
+        log.info("指标查询合并结果:{}", responseList);
         return responseList;
     }
 
@@ -181,70 +139,87 @@ public class MetricsServiceImpl implements MetricsService {
         String startTime = request.getStartTime();
         String endTime = request.getEndTime();
         String realEndTime = "";
-
-
-        //拼接SQL-必填字段
-        sb.append("select appName,service,method,middlewareName,total,rpcType from trace_metrics " +
-                "where time >'" + startTime + "' and time <'" + endTime + "' and appName = '" + appName + "'");
-        //拼接SQL-流量类型
-        if (request.getClusterTest() != -1) {
-            sb.append(" and clusterTest = '" + (0 == request.getClusterTest() ? "false" : "true") + "'");
+        ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
+        clickhouseQueryRequest.setMeasurement("trace_metrics_all");
+        Map<String, String> fieldAndAlias = new HashMap<>();
+        fieldAndAlias.put("appName", null);
+        fieldAndAlias.put("service", null);
+        fieldAndAlias.put("method", null);
+        fieldAndAlias.put("middlewareName", null);
+        fieldAndAlias.put("total", null);
+        fieldAndAlias.put("rpcType", null);
+        clickhouseQueryRequest.setFieldAndAlias(fieldAndAlias);
+        Map<String, Object> whereFilter = new HashMap<>();
+        //必填字段
+        if (StringUtils.isNotBlank(startTime)){
+            clickhouseQueryRequest.setStartTime(Long.parseLong(startTime));
         }
-        //拼接租户，环境隔离
+        if (StringUtils.isNotBlank(endTime)){
+            clickhouseQueryRequest.setEndTime(Long.parseLong(endTime));
+        }
+        whereFilter.put("appName", appName);
+        //流量类型
+        if (request.getClusterTest() != -1) {
+            whereFilter.put("clusterTest", 0 == request.getClusterTest() ? "false" : "true");
+        }
+        //租户，环境隔离
         if (StringUtils.isNotBlank(request.getTenantAppKey())) {
-            sb.append(" and tenantAppKey='" + request.getTenantAppKey() + "' ");
+            whereFilter.put("tenantAppKey", request.getTenantAppKey());
         }
         if (StringUtils.isNotBlank(request.getEnvCode())) {
-            sb.append(" and envCode='" + request.getEnvCode() + "' ");
+            whereFilter.put("envCode", request.getEnvCode());
         }
-        //拼接SQL-服务名称
+        //服务名称
         String serviceName = request.getServiceName();
         if (StringUtils.isNotBlank(serviceName)) {
-            String info[] = serviceName.split("#");
+            String[] info = serviceName.split("#");
+            service_interface = info[0];
+            whereFilter.put("service", service_interface);
             if (info.length == 2) {
-                service_interface = info[0];
                 method_interface = info[1];
-                sb.append(" and service = '" + service_interface + "' and method='" + method_interface + "'");
-            } else {
-                service_interface = info[0];
-                sb.append(" and service = '" + service_interface + "'");
+                whereFilter.put("method", method_interface);
             }
         }
-        //拼接SQL-活动名称
+        //活动名称
         if (StringUtils.isNotBlank(request.getActivityName())) {
-            String info[] = request.getActivityName().split("#");
+            String[] info = request.getActivityName().split("#");
             service_active = info[0];
             method_active = info[1];
-            String linkId = pradarLinkEdgeMapper.getLinkId(request.getAppName(), service_active, method_active);
-            List<String> list = null;
-            if (StringUtils.isNotBlank(linkId)) {
-                list = this.cache1.getIfPresent(linkId);
-            }
-            if (list != null && list.size() > 0) {
-                sb.append(" and (");
-                for (int i = 0; i < list.size(); i++) {
-                    String s2m[] = list.get(i).split("#");
-                    if (i != 0) {
-                        sb.append(" or ");
-                    }
-                    sb.append(" (service = '" + s2m[1] + "' and method='" + s2m[2] + "')");
-                }
-                sb.append(" )");
-            }
+            whereFilter.put("service", service_active);
+            whereFilter.put("method", method_active);
         }
-        //sb.append(" limit "+request.getPageSize()+" OFFSET  "+request.getOffset());
-        sb.append(" order by time desc TZ('Asia/Shanghai')");
-        log.info("查询sql01:{}", sb);
-        List<QueryResult.Result> influxResult = influxDbManager.query(sb.toString());
-        List<QueryResult.Series> list = influxResult.get(0).getSeries();
+        clickhouseQueryRequest.setWhereFilter(whereFilter);
+        clickhouseQueryRequest.setOrderByStrategy(1);
+
+        List<TraceMetricsAll> traceMetricsAlls = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest, TraceMetricsAll.class);
         List<TraceMetrics> resultList = new ArrayList<>();
-        if (list != null) {
-            for (QueryResult.Series result : list) {
-                List columns = result.getColumns();
-                List values = result.getValues();
-                resultList = getQueryData(columns, values);
-            }
-        }
+        traceMetricsAlls.forEach(traceMetricsAll -> {
+            TraceMetrics traceMetrics = new TraceMetrics();
+            traceMetrics.setTime(traceMetricsAll.getTime() + "");
+            traceMetrics.setAppName(traceMetricsAll.getAppName());
+            traceMetrics.setAvgRt(traceMetricsAll.getAvgRt() == null ? 0 : traceMetricsAll.getAvgRt().intValue());
+            traceMetrics.setAvgTps(traceMetricsAll.getAvgTps() == null ? 0 : traceMetricsAll.getAvgTps().intValue());
+            traceMetrics.setClusterTest("true".equals(traceMetricsAll.getClusterTest()));
+            traceMetrics.setE2eErrorCount(traceMetricsAll.getE2eErrorCount());
+            traceMetrics.setE2eSuccessCount(traceMetricsAll.getE2eSuccessCount());
+            traceMetrics.setEdgeId(traceMetricsAll.getEdgeId());
+            traceMetrics.setErrorCount(traceMetricsAll.getErrorCount());
+            traceMetrics.setHitCount(traceMetricsAll.getHitCount());
+            traceMetrics.setLog_time(traceMetricsAll.getLogTime());
+            traceMetrics.setMaxRt(traceMetricsAll.getMaxRt());
+            traceMetrics.setMethod(traceMetricsAll.getMethod());
+            traceMetrics.setMiddlewareName(traceMetricsAll.getMiddlewareName());
+            traceMetrics.setRpcType(StringUtils.isNotBlank(traceMetricsAll.getRpcType()) ? Integer.parseInt(traceMetricsAll.getRpcType()) : 0);
+            traceMetrics.setService(traceMetricsAll.getService());
+            traceMetrics.setSqlStatement(traceMetricsAll.getSqlStatement());
+            traceMetrics.setSuccessCount(traceMetricsAll.getSuccessCount());
+            traceMetrics.setTotal(traceMetricsAll.getTotal());
+            traceMetrics.setTotalCount(traceMetricsAll.getTotalCount());
+            traceMetrics.setTotalRt(traceMetricsAll.getTotalRt());
+            traceMetrics.setTotalTps(traceMetricsAll.getTotalTps());
+            traceMetrics.setTraceId(traceMetricsAll.getTraceId());
+            resultList.add(traceMetrics);
+        });
         // 提前分页总户数判断
         int size = resultList.size();
         Integer current = request.getCurrentPage();
@@ -286,36 +261,62 @@ public class MetricsServiceImpl implements MetricsService {
                     response.setActiveList(value);
                     allActiveList.addAll(value);
                 }
+                ClickhouseQueryRequest traceMetricsAllQuery = new ClickhouseQueryRequest();
+                traceMetricsAllQuery.setMeasurement("trace_metrics_all");
+                if (StringUtils.isNotBlank(startTime)){
+                    traceMetricsAllQuery.setStartTime(Long.parseLong(startTime));
+                }
+                if (StringUtils.isNotBlank(endTime)){
+                    traceMetricsAllQuery.setEndTime(Long.parseLong(endTime));
+                }
+
+                Map<String, Object> traceMetricsWhereFilter = new HashMap<>();
+                traceMetricsAllQuery.setWhereFilter(traceMetricsWhereFilter);
+                traceMetricsAllQuery.setOrderByStrategy(1);
+                List<String> groupByTags = new ArrayList<>();
+                traceMetricsAllQuery.setGroupByTags(groupByTags);
+                Map<String, String> traceMetricsAggregateStrategy = new HashMap<>();
+                traceMetricsAllQuery.setAggregateStrategy(traceMetricsAggregateStrategy);
+                traceMetricsAggregateStrategy.put("sum(totalCount)", "requestCount");
+                traceMetricsAggregateStrategy.put("sum(totalCount)/" + diffInMillis, "tps");
+                traceMetricsAggregateStrategy.put("sum(successCount)/sum(totalCount)", "successRatio");
+                traceMetricsAggregateStrategy.put("sum(totalRt)/sum(totalCount)", "responseConsuming");
+                if (StringUtils.isNotBlank(startTime)){
+                    traceMetricsAllQuery.setStartTime(Long.parseLong(startTime));
+                }
+                if (StringUtils.isNotBlank(endTime)){
+                    traceMetricsAllQuery.setEndTime(Long.parseLong(endTime));
+                }
+                traceMetricsWhereFilter.put("appName", response.getAppName());
+                traceMetricsWhereFilter.put("service", response.getService());
+                traceMetricsWhereFilter.put("method", response.getMethod());
+
+                groupByTags.add("appName");
+                groupByTags.add("service");
+                groupByTags.add("method");
                 //计算指标
-                sql = "select sum(totalCount) as requestCount,sum(totalCount)/" + diffInMillis + " as tps,sum(successCount)/sum(totalCount) as successRatio,sum(totalRt)/sum(totalCount) as responseConsuming from trace_metrics\n" +
-                        "where time >'" + startTime + "' and time <'" + endTime + "'\n" +
-                        "and appName = '" + response.getAppName() + "'\n" +
-                        "and service = '" + response.getService() + "'\n" +
-                        "and method = '" + response.getMethod() + "'\n";
                 if (request.getClusterTest() != -1) {
-                    sql += " and clusterTest = '" + (0 == request.getClusterTest() ? "false" : "true") + "'\n";
+                    traceMetricsWhereFilter.put("clusterTest", 0 == request.getClusterTest() ? "false" : "true");
                 }
                 //拼接租户，环境隔离
                 if (StringUtils.isNotBlank(request.getTenantAppKey())) {
-                    sql += " and tenantAppKey='" + request.getTenantAppKey() + "' ";
+                    traceMetricsWhereFilter.put("tenantAppKey", request.getTenantAppKey());
                 }
                 if (StringUtils.isNotBlank(request.getEnvCode())) {
-                    sql += " and envCode='" + request.getEnvCode() + "' ";
+                    traceMetricsWhereFilter.put("envCode", request.getEnvCode());
                 }
-                sql += "group by appName,service,method\n" +
-                        " TZ('Asia/Shanghai')";
-                log.info("查询sql02:{}", sql.replace("\n", " "));
-                List<QueryResult.Result> influxResult1 = influxDbManager.query(sql);
-                List<QueryResult.Series> list1 = influxResult1.get(0).getSeries();
+                Response<List<Map<String, Object>>> listResponse = clickhouseQueryService.queryObjectByConditions(traceMetricsAllQuery);
+                List<Map<String, Object>> mapList = listResponse.getData();
+
                 float requestCount = 0f;
                 float tps = 0f;
                 float successRatio = 0f;
                 float responseConsuming = 0f;
-                if (CollectionUtils.isNotEmpty(list1)) {
-                    requestCount = Float.parseFloat(list1.get(0).getValues().get(0).get(1).toString());
-                    tps = Float.parseFloat(list1.get(0).getValues().get(0).get(2).toString());
-                    successRatio = Float.parseFloat(list1.get(0).getValues().get(0).get(3).toString());
-                    responseConsuming = Float.parseFloat(list1.get(0).getValues().get(0).get(4).toString());
+                if (CollectionUtils.isNotEmpty(mapList)) {
+                    requestCount = Float.parseFloat(mapList.get(0).get("requestCount").toString());
+                    tps = Float.parseFloat(mapList.get(0).get("tps").toString());
+                    successRatio = Float.parseFloat(mapList.get(0).get("successRatio").toString());
+                    responseConsuming = Float.parseFloat(mapList.get(0).get("responseConsuming").toString());
                     response.setRequestCount(requestCount);                 //总请求次数
                     response.setTps(tps);                                   //tps
                     response.setResponseConsuming(responseConsuming);       //耗时
@@ -714,37 +715,28 @@ public class MetricsServiceImpl implements MetricsService {
     }
 
     private long getTracePeriod(long startMilli, long endMilli, String eagleId) throws ParseException {
-        String firstTimeSql =
-                "SELECT" +
-                        " time, totalTps" +
-                        " FROM trace_metrics" +
-                        " where" +
-                        " time >= " + formatTimestamp(startMilli) +
-                        " and time <= " + formatTimestamp(endMilli) +
-                        " and edgeId = '" + eagleId + "'" +
-                        " order by time asc" +
-                        " limit 1";
-        String lastTimeSql =
-                "SELECT" +
-                        " time, totalTps" +
-                        " FROM trace_metrics" +
-                        " where" +
-                        " time >= " + formatTimestamp(startMilli) +
-                        " and time <= " + formatTimestamp(endMilli) +
-                        " and edgeId = '" + eagleId + "'" +
-                        " order by time desc" +
-                        " limit 1";
+        ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
+        clickhouseQueryRequest.setMeasurement("trace_metrics_all");
+        clickhouseQueryRequest.setStartTimeEqual(true);
+        clickhouseQueryRequest.setStartTime(startMilli);
+        clickhouseQueryRequest.setEndTime(endMilli);
+        clickhouseQueryRequest.setEndTimeEqual(true);
+        Map<String, Object> whereFilter = new HashMap<>();
+        clickhouseQueryRequest.setWhereFilter(whereFilter);
+        Map<String, String> fieldAndAlias = new HashMap<>();
+        clickhouseQueryRequest.setFieldAndAlias(fieldAndAlias);
+        fieldAndAlias.put("time", null);
+        whereFilter.put("edgeId", eagleId);
+        clickhouseQueryRequest.setLimitRows(1);
+        clickhouseQueryRequest.setOrderByStrategy(1);
+        List<TraceMetricsAll> lastMetricsAlls = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest, TraceMetricsAll.class);
 
-        List<QueryResult.Result> influxResult1 = influxDbManager.query(firstTimeSql);
-        List<QueryResult.Series> list1 = influxResult1.get(0).getSeries();
-        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
-        long firstTime = format.parse(list1.get(0).getValues().get(0).get(0).toString()).getTime();
-
-        List<QueryResult.Result> influxResult2 = influxDbManager.query(lastTimeSql);
-        List<QueryResult.Series> list2 = influxResult2.get(0).getSeries();
-        long lastTime = format.parse(list2.get(0).getValues().get(0).get(0).toString()).getTime();
-
-        return (lastTime - firstTime) / 1000;
+        clickhouseQueryRequest.setOrderByStrategy(0);
+        List<TraceMetricsAll> firstMetricsAlls = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest, TraceMetricsAll.class);
+        if (CollectionUtils.isEmpty(lastMetricsAlls) || CollectionUtils.isEmpty(firstMetricsAlls)) {
+            return 0;
+        }
+        return (lastMetricsAlls.get(0).getTime() - firstMetricsAlls.get(0).getTime()) / 1000;
     }
 
     public List<Map<String, Object>> metricFromInfluxdb(MetricsFromInfluxdbRequest request) {
@@ -756,50 +748,49 @@ public class MetricsServiceImpl implements MetricsService {
         String eagleId = request.getEagleId();
         List<String> eagleIds = request.getEagleIds();
 
-        StringBuilder allTotalTpsAndRtCountQuerySql = new StringBuilder(
-                "SELECT" +
-                        " SUM(successCount) as allSuccessCount," +
-                        " SUM(totalCount) as allTotalCount," +
-                        " SUM(totalTps) as allTotalTps," +
-                        " MAX(maxRt) as allMaxRt," +
-                        " SUM(totalRt) as allTotalRt" +
-                        " FROM trace_metrics" +
-                        " where" +
-                        " time >= " + formatTimestamp(startMilli) +
-                        " AND time <= " + formatTimestamp(endMilli));
+        ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
+        clickhouseQueryRequest.setMeasurement("trace_metrics_all");
+        clickhouseQueryRequest.setStartTime(startMilli);
+        clickhouseQueryRequest.setStartTimeEqual(true);
+        clickhouseQueryRequest.setEndTime(endMilli);
+        clickhouseQueryRequest.setEndTimeEqual(true);
+        Map<String, Object> whereFilter = new HashMap<>();
+        clickhouseQueryRequest.setWhereFilter(whereFilter);
+        List<String> groupByTags = new ArrayList<>();
+        clickhouseQueryRequest.setGroupByTags(groupByTags);
+        Map<String, String> aggregateStrategy = new HashMap<>();
+        clickhouseQueryRequest.setAggregateStrategy(aggregateStrategy);
+
+        aggregateStrategy.put("edgeId", null);
+        aggregateStrategy.put("SUM(successCount)", "allSuccessCount");
+        aggregateStrategy.put("SUM(totalCount)", "allTotalCount");
+        aggregateStrategy.put("SUM(totalTps)", "allTotalTps");
+        aggregateStrategy.put("MAX(maxRt)", "allMaxRt");
+        aggregateStrategy.put("SUM(totalRt)", "allTotalRt");
         // 如果不是 混合流量 则需要增加条件
         if (null != metricsType) {
-            allTotalTpsAndRtCountQuerySql.append(" AND clusterTest = '" + metricsType + "'");
+            whereFilter.put("clusterTest", metricsType);
         }
         if (CollectionUtils.isEmpty(eagleIds)) {
-            allTotalTpsAndRtCountQuerySql.append(" AND edgeId = '" + eagleId + "'");
+            whereFilter.put("edgeId", eagleId);
         } else {
-            StringBuilder inEagleId = new StringBuilder();
-            inEagleId.append(" AND (");
-            eagleIds.forEach(tmpEagleId -> {
-                inEagleId.append("edgeId = '" + tmpEagleId + "' OR ");
-            });
-            inEagleId.delete(inEagleId.lastIndexOf("OR"), inEagleId.lastIndexOf("OR") + 3);
-            inEagleId.append(")");
-            allTotalTpsAndRtCountQuerySql.append(inEagleId);
-            allTotalTpsAndRtCountQuerySql.append(" group by edgeId");
+            whereFilter.put("edgeId", eagleIds);
         }
-
-        log.info("查询sql03:{}", allTotalTpsAndRtCountQuerySql.toString().replace("\n", " "));
+        groupByTags.add("edgeId");
         try {
-            List<QueryResult.Result> influxResult1 = influxDbManager.query(allTotalTpsAndRtCountQuerySql.toString());
-            List<QueryResult.Series> series = influxResult1.get(0).getSeries();
-            if (CollectionUtils.isNotEmpty(series)) {
-                series.forEach(serie -> {
+            Response<List<Map<String, Object>>> listResponse = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest);
+            List<Map<String, Object>> mapList = listResponse.getData();
+            if (CollectionUtils.isNotEmpty(mapList)) {
+                mapList.forEach(serie -> {
                     Map<String, Object> resultMap = new HashMap<>();
-                    String edgeId = serie.getTags().get("edgeId");
+                    String edgeId = serie.get("edgeId").toString();
                     edgeIdSetFromInfluxdb.add(edgeId);
                     resultMap.put("edgeId", edgeId);
-                    resultMap.put("allSuccessCount", Long.parseLong(serie.getValues().get(0).get(1).toString().split("\\.")[0]));
-                    resultMap.put("allTotalCount", Long.parseLong(serie.getValues().get(0).get(2).toString().split("\\.")[0]));
-                    resultMap.put("allTotalTps", Long.parseLong(serie.getValues().get(0).get(3).toString().split("\\.")[0]));
-                    resultMap.put("allMaxRt", Long.parseLong(serie.getValues().get(0).get(4).toString().split("\\.")[0]));
-                    resultMap.put("allTotalRt", Long.parseLong(serie.getValues().get(0).get(5).toString().split("\\.")[0]));
+                    resultMap.put("allSuccessCount", Long.parseLong(serie.get("allSuccessCount").toString()));
+                    resultMap.put("allTotalCount", Long.parseLong(serie.get("allTotalCount").toString()));
+                    resultMap.put("allTotalTps", Long.parseLong(serie.get("allTotalTps").toString()));
+                    resultMap.put("allMaxRt", Long.parseLong(serie.get("allMaxRt").toString()));
+                    resultMap.put("allTotalRt", Long.parseLong(serie.get("allTotalRt").toString()));
                     long realSeconds = 0;
                     try {
                         realSeconds = getTracePeriod(startMilli, endMilli, edgeId);

@@ -2,8 +2,8 @@ package io.shulie.amdb.controller;
 
 import io.shulie.amdb.common.Response;
 import io.shulie.amdb.exception.AmdbExceptionEnums;
-import io.shulie.amdb.request.query.InfluxDbQueryRequest;
-import io.shulie.amdb.service.InfluxDbQueryService;
+import io.shulie.amdb.request.query.ClickhouseQueryRequest;
+import io.shulie.amdb.service.ClickhouseQueryService;
 import io.swagger.annotations.Api;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
@@ -31,17 +31,19 @@ import java.util.Set;
 public class InfluxDbQueryController {
 
     @Autowired
-    private InfluxDbQueryService influxDbQueryService;
+    private ClickhouseQueryService clickhouseQueryService;
 
     @RequestMapping(value = "/queryByConditions", method = RequestMethod.POST)
-    public Response queryByConditions(@RequestBody InfluxDbQueryRequest request) {
+    public Response queryByConditions(@RequestBody ClickhouseQueryRequest request) {
         //参数校验
         AmdbExceptionEnums responseEnum = checkParams(request);
         if (!responseEnum.getCode().equals(AmdbExceptionEnums.INFLUXDB_QUERY_PARAM_CHECK_SUCCESS.getCode())) {
             return Response.fail(responseEnum, "");
         }
+        request.setStartTimeEqual(true);
+        request.setEndTimeEqual(true);
         //调用服务
-        Response<List<Map<String, Object>>> response = influxDbQueryService.queryObjectByConditions(request);
+        Response<List<Map<String, Object>>> response = clickhouseQueryService.queryObjectByConditions(request);
         if (response == null) {
             return Response.success(Lists.newArrayList());
         }
@@ -52,7 +54,7 @@ public class InfluxDbQueryController {
         return response;
     }
 
-    private AmdbExceptionEnums checkParams(InfluxDbQueryRequest request) {
+    private AmdbExceptionEnums checkParams(ClickhouseQueryRequest request) {
         //没有传入表名
         if (StringUtils.isBlank(request.getMeasurement())) {
             return AmdbExceptionEnums.INFLUXDB_QUERY_PARAM_CHECK_LACK_MEASUREMENT;
@@ -61,9 +63,9 @@ public class InfluxDbQueryController {
         if (request.getStartTime() < 0 || request.getEndTime() < 0 || request.getStartTime() > request.getEndTime()) {
             return AmdbExceptionEnums.INFLUXDB_QUERY_PARAM_CHECK_INVALID_TIME;
         }
-        if (StringUtils.isBlank(request.getDatabase())) {
-            request.setDatabase("engine");
-        }
+//        if (StringUtils.isBlank(request.getDatabase())) {
+//            request.setDatabase("engine");
+//        }
         //查询条数非法
         if (request.getLimitRows() < 0) {
             request.setLimitRows(0);
