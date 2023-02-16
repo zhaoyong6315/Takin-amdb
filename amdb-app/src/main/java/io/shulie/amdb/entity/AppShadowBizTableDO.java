@@ -1,15 +1,13 @@
 package io.shulie.amdb.entity;
 
-import java.io.Serializable;
-import java.util.Date;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
 
 import javax.persistence.Column;
 import javax.persistence.Id;
 import javax.persistence.Table;
-
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
-import lombok.Data;
+import java.util.Date;
 
 @Data
 @ApiModel
@@ -37,6 +35,14 @@ public class AppShadowBizTableDO extends BaseDatabaseDO {
     @ApiModelProperty("用户名")
     @Column(name = "`table_user`")
     private String tableUser;
+
+    @ApiModelProperty("有写入操作")
+    @Column(name = "`can_write`")
+    private Integer canWrite;
+
+    @ApiModelProperty("有读取操作")
+    @Column(name = "`can_read`")
+    private Integer canRead;
 
     @ApiModelProperty("unique_key")
     @Column(name = "`unique_key`")
