@@ -132,7 +132,7 @@ public class MetricsServiceImpl implements MetricsService {
         if (this.cache1.size() == 0 || this.cache2.size() == 0) {
             refreshCache();
         }
-        StringBuffer sb = new StringBuffer();
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
         String service_interface, method_interface;
         String service_active, method_active;
         String appName = request.getAppName();
@@ -152,10 +152,18 @@ public class MetricsServiceImpl implements MetricsService {
         Map<String, Object> whereFilter = new HashMap<>();
         //必填字段
         if (StringUtils.isNotBlank(startTime)) {
-            clickhouseQueryRequest.setStartTime(Long.parseLong(startTime));
+            try {
+                clickhouseQueryRequest.setStartTime(sdf.parse(startTime).getTime());
+            } catch (ParseException e) {
+                e.printStackTrace();
+            }
         }
         if (StringUtils.isNotBlank(endTime)) {
-            clickhouseQueryRequest.setEndTime(Long.parseLong(endTime));
+            try {
+                clickhouseQueryRequest.setEndTime(sdf.parse(startTime).getTime());
+            } catch (ParseException e) {
+                e.printStackTrace();
+            }
         }
         whereFilter.put("appName", appName);
         //流量类型
@@ -232,7 +240,7 @@ public class MetricsServiceImpl implements MetricsService {
         int diffInMillis = 300;
         String maxTime = resultList.get(0).getTime();
         String minTime = resultList.get(size - 1).getTime();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
         try {
             Date firstDate = new Date(minTime);
             Date secondDate = new Date(maxTime);
