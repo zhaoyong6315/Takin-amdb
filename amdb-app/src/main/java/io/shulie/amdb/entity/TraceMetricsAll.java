@@ -42,25 +42,25 @@ public class TraceMetricsAll implements Serializable {
 
     private String envCode;
 
-    private Integer totalCount;
+    private int totalCount;
 
-    private Integer successCount;
+    private int successCount;
 
-    private Integer totalRt;
+    private int totalRt;
 
-    private Integer errorCount;
+    private int errorCount;
 
-    private Integer hitCount;
+    private int hitCount;
 
-    private Integer totalTps;
+    private int totalTps;
 
-    private Integer total;
+    private int total;
 
-    private Integer e2eSuccessCount;
+    private int e2eSuccessCount;
 
-    private Integer e2eErrorCount;
+    private int e2eErrorCount;
 
-    private Integer maxRt;
+    private int maxRt;
 
     private BigDecimal avgRt;
 
