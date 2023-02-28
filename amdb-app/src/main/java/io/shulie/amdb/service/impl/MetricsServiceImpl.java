@@ -149,6 +149,9 @@ public class MetricsServiceImpl implements MetricsService {
         fieldAndAlias.put("middlewareName", null);
         fieldAndAlias.put("total", null);
         fieldAndAlias.put("rpcType", null);
+        fieldAndAlias.put("totalCount", null);
+        fieldAndAlias.put("successCount", null);
+        fieldAndAlias.put("totalRt", null);
         clickhouseQueryRequest.setFieldAndAlias(fieldAndAlias);
         Map<String, Object> whereFilter = new HashMap<>();
         //必填字段
