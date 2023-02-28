@@ -128,7 +128,7 @@ public class MetricsServiceImpl implements MetricsService {
 
     @Override
     public Pair<List<MetricsDetailResponse>, Integer> metricsDetailes(MetricsDetailQueryRequest request) {
-        List<MetricsDetailResponse> resultList2 = new ArrayList<>();
+
         if (this.cache1.size() == 0 || this.cache2.size() == 0) {
             refreshCache();
         }
@@ -234,17 +234,19 @@ public class MetricsServiceImpl implements MetricsService {
         String minTime = resultList.get(size - 1).getTime();
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
         try {
-            Date firstDate = sdf.parse(minTime.replace("T", " ").replace("+08:00", ""));
-            Date secondDate = sdf.parse(maxTime.replace("T", " ").replace("+08:00", ""));
+            Date firstDate = new Date(minTime);
+            Date secondDate = new Date(maxTime);
             realEndTime = sdf.format(secondDate);
             diffInMillis = ((int) (Math.abs(secondDate.getTime() - firstDate.getTime()) / 1000));
-        } catch (ParseException e) {
+        } catch (Exception e) {
             e.printStackTrace();
         }
 
+        List<MetricsDetailResponse> resultList2 = new ArrayList<>();
         //去重(因为influxDB的group by支持不够),计算指标,计算业务活动入口
         String sql;
         Set<String> allActiveList = new HashSet<>();
+        Map<String, List<TraceMetrics>> stringListMap = resultList.stream().collect(Collectors.groupingBy(o -> o.getAppName() + "-" + o.getService() + "-" + o.getMethod()));
         for (TraceMetrics temp : resultList) {
             MetricsDetailResponse response = new MetricsDetailResponse();
             response.setAppName(temp.getAppName());
@@ -261,62 +263,20 @@ public class MetricsServiceImpl implements MetricsService {
                     response.setActiveList(value);
                     allActiveList.addAll(value);
                 }
-                ClickhouseQueryRequest traceMetricsAllQuery = new ClickhouseQueryRequest();
-                traceMetricsAllQuery.setMeasurement("trace_metrics_all");
-                if (StringUtils.isNotBlank(startTime)) {
-                    traceMetricsAllQuery.setStartTime(Long.parseLong(startTime));
-                }
-                if (StringUtils.isNotBlank(endTime)) {
-                    traceMetricsAllQuery.setEndTime(Long.parseLong(endTime));
-                }
 
-                Map<String, Object> traceMetricsWhereFilter = new HashMap<>();
-                traceMetricsAllQuery.setWhereFilter(traceMetricsWhereFilter);
-                traceMetricsAllQuery.setOrderByStrategy(1);
-                List<String> groupByTags = new ArrayList<>();
-                traceMetricsAllQuery.setGroupByTags(groupByTags);
-                Map<String, String> traceMetricsAggregateStrategy = new HashMap<>();
-                traceMetricsAllQuery.setAggregateStrategy(traceMetricsAggregateStrategy);
-                traceMetricsAggregateStrategy.put("sum(totalCount)", "requestCount");
-                traceMetricsAggregateStrategy.put("sum(totalCount)/" + diffInMillis, "tps");
-                traceMetricsAggregateStrategy.put("sum(successCount)/sum(totalCount)", "successRatio");
-                traceMetricsAggregateStrategy.put("sum(totalRt)/sum(totalCount)", "responseConsuming");
-                if (StringUtils.isNotBlank(startTime)) {
-                    traceMetricsAllQuery.setStartTime(Long.parseLong(startTime));
-                }
-                if (StringUtils.isNotBlank(endTime)) {
-                    traceMetricsAllQuery.setEndTime(Long.parseLong(endTime));
-                }
-                traceMetricsWhereFilter.put("appName", response.getAppName());
-                traceMetricsWhereFilter.put("service", response.getService());
-                traceMetricsWhereFilter.put("method", response.getMethod());
-
-                groupByTags.add("appName");
-                groupByTags.add("service");
-                groupByTags.add("method");
-                //计算指标
-                if (request.getClusterTest() != -1) {
-                    traceMetricsWhereFilter.put("clusterTest", 0 == request.getClusterTest() ? "false" : "true");
-                }
-                //拼接租户，环境隔离
-                if (StringUtils.isNotBlank(request.getTenantAppKey())) {
-                    traceMetricsWhereFilter.put("tenantAppKey", request.getTenantAppKey());
-                }
-                if (StringUtils.isNotBlank(request.getEnvCode())) {
-                    traceMetricsWhereFilter.put("envCode", request.getEnvCode());
-                }
-                Response<List<Map<String, Object>>> listResponse = clickhouseQueryService.queryObjectByConditions(traceMetricsAllQuery);
-                List<Map<String, Object>> mapList = listResponse.getData();
-
+                String tempKey = temp.getAppName() + "-" + temp.getService() + "-" + temp.getMethod();
                 float requestCount = 0f;
                 float tps = 0f;
                 float successRatio = 0f;
                 float responseConsuming = 0f;
-                if (CollectionUtils.isNotEmpty(mapList)) {
-                    requestCount = Float.parseFloat(mapList.get(0).get("requestCount").toString());
-                    tps = Float.parseFloat(mapList.get(0).get("tps").toString());
-                    successRatio = Float.parseFloat(mapList.get(0).get("successRatio").toString());
-                    responseConsuming = Float.parseFloat(mapList.get(0).get("responseConsuming").toString());
+                if (stringListMap.containsKey(tempKey)) {
+                    List<TraceMetrics> traceMetrics = stringListMap.get(tempKey);
+                    int sumSuccessCount = traceMetrics.stream().mapToInt(TraceMetrics::getSuccessCount).sum();
+                    int sumTotalRt = traceMetrics.stream().mapToInt(TraceMetrics::getTotalRt).sum();
+                    requestCount = traceMetrics.stream().mapToInt(TraceMetrics::getTotalCount).sum();
+                    tps = requestCount / diffInMillis;
+                    successRatio = sumSuccessCount / requestCount;
+                    responseConsuming = sumTotalRt / requestCount;
                     response.setRequestCount(requestCount);                 //总请求次数
                     response.setTps(tps);                                   //tps
                     response.setResponseConsuming(responseConsuming);       //耗时
@@ -770,7 +730,7 @@ public class MetricsServiceImpl implements MetricsService {
                     resultMap.put("allTotalRt", Long.parseLong(serie.get("allTotalRt").toString()));
                     long maxTime = Long.parseLong(serie.get("maxTime").toString());
                     long minTime = Long.parseLong(serie.get("minTime").toString());
-                    resultMap.put("realSeconds", maxTime - minTime);
+                    resultMap.put("realSeconds", (maxTime - minTime) / 1000);
                     result.add(resultMap);
                 });
 
