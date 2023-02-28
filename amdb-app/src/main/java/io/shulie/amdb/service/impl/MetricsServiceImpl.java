@@ -714,25 +714,6 @@ public class MetricsServiceImpl implements MetricsService {
         return modelList;
     }
 
-    private long getTracePeriod(long startMilli, long endMilli, String eagleId, List<Map<String, Object>> timeData) throws ParseException {
-        if (CollectionUtils.isEmpty(timeData) || StringUtils.isBlank(eagleId)) {
-            return 0;
-        }
-        List<Long> mapList = timeData.stream().filter(o -> {
-            if (o.get("time") != null && o.get("edgeId") != null) {
-                long time = Long.parseLong(o.get("time").toString());
-                String edgeId = o.get("edgeId").toString();
-                return time >= startMilli && time <= endMilli && eagleId.equals(edgeId);
-            }
-            return false;
-        }).map(o -> Long.parseLong(o.get("time").toString())).sorted().collect(Collectors.toList());
-
-        if (CollectionUtils.isEmpty(mapList)) {
-            return 0;
-        }
-        return (mapList.get(mapList.size() - 1) - mapList.get(0)) / 1000;
-    }
-
     public List<Map<String, Object>> metricFromInfluxdb(MetricsFromInfluxdbRequest request) {
         List result = new ArrayList<Map<String, Object>>();
         Set<String> edgeIdSetFromInfluxdb = new HashSet<String>();
@@ -761,6 +742,8 @@ public class MetricsServiceImpl implements MetricsService {
         aggregateStrategy.put("SUM(totalTps)", "allTotalTps");
         aggregateStrategy.put("MAX(maxRt)", "allMaxRt");
         aggregateStrategy.put("SUM(totalRt)", "allTotalRt");
+        aggregateStrategy.put("MAX(time)", "maxTime");
+        aggregateStrategy.put("MIN(time)", "minTime");
         // 如果不是 混合流量 则需要增加条件
         if (null != metricsType) {
             whereFilter.put("clusterTest", metricsType);
@@ -775,10 +758,6 @@ public class MetricsServiceImpl implements MetricsService {
             Response<List<Map<String, Object>>> listResponse = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest);
             List<Map<String, Object>> mapList = listResponse.getData();
             if (CollectionUtils.isNotEmpty(mapList)) {
-                List<String> edgeIdList = mapList.stream().map(serie -> {
-                    return serie.get("edgeId").toString();
-                }).collect(Collectors.toList());
-                List<Map<String, Object>> timeData = getTimeData(startMilli, endMilli, edgeIdList);
                 mapList.forEach(serie -> {
                     Map<String, Object> resultMap = new HashMap<>();
                     String edgeId = serie.get("edgeId").toString();
@@ -789,13 +768,9 @@ public class MetricsServiceImpl implements MetricsService {
                     resultMap.put("allTotalTps", Long.parseLong(serie.get("allTotalTps").toString()));
                     resultMap.put("allMaxRt", Long.parseLong(serie.get("allMaxRt").toString()));
                     resultMap.put("allTotalRt", Long.parseLong(serie.get("allTotalRt").toString()));
-                    long realSeconds = 0;
-                    try {
-                        realSeconds = getTracePeriod(startMilli, endMilli, edgeId, timeData);
-                    } catch (ParseException e) {
-                        e.printStackTrace();
-                    }
-                    resultMap.put("realSeconds", realSeconds);
+                    long maxTime = Long.parseLong(serie.get("maxTime").toString());
+                    long minTime = Long.parseLong(serie.get("minTime").toString());
+                    resultMap.put("realSeconds", maxTime - minTime);
                     result.add(resultMap);
                 });
 
@@ -831,26 +806,5 @@ public class MetricsServiceImpl implements MetricsService {
             });
         }
         return result;
-    }
-
-    private List<Map<String, Object>> getTimeData(long startMilli, long endMilli, List<String> eagleIds) {
-        ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
-        clickhouseQueryRequest.setMeasurement("trace_metrics_all");
-        clickhouseQueryRequest.setStartTimeEqual(true);
-        clickhouseQueryRequest.setStartTime(startMilli);
-        clickhouseQueryRequest.setEndTime(endMilli);
-        clickhouseQueryRequest.setEndTimeEqual(true);
-        Map<String, Object> whereFilter = new HashMap<>();
-        clickhouseQueryRequest.setWhereFilter(whereFilter);
-        Map<String, String> fieldAndAlias = new HashMap<>();
-        clickhouseQueryRequest.setFieldAndAlias(fieldAndAlias);
-        fieldAndAlias.put("time", null);
-        fieldAndAlias.put("edgeId", null);
-        whereFilter.put("edgeId", eagleIds);
-        Response<List<Map<String, Object>>> listResponse = clickhouseQueryService.queryObjectByConditions(clickhouseQueryRequest);
-        if (listResponse != null) {
-            return listResponse.getData();
-        }
-        return null;
     }
 }
