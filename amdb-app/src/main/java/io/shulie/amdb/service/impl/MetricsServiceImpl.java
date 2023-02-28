@@ -142,6 +142,7 @@ public class MetricsServiceImpl implements MetricsService {
         ClickhouseQueryRequest clickhouseQueryRequest = new ClickhouseQueryRequest();
         clickhouseQueryRequest.setMeasurement("trace_metrics_all");
         Map<String, String> fieldAndAlias = new HashMap<>();
+        fieldAndAlias.put("time", null);
         fieldAndAlias.put("appName", null);
         fieldAndAlias.put("service", null);
         fieldAndAlias.put("method", null);
