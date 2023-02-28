@@ -160,7 +160,7 @@ public class MetricsServiceImpl implements MetricsService {
         }
         if (StringUtils.isNotBlank(endTime)) {
             try {
-                clickhouseQueryRequest.setEndTime(sdf.parse(startTime).getTime());
+                clickhouseQueryRequest.setEndTime(sdf.parse(endTime).getTime());
             } catch (ParseException e) {
                 e.printStackTrace();
             }
