@@ -18,6 +18,9 @@ public class EnginePressureQuery extends AbstractAmdbBaseRequest {
 
     private String transaction;
 
+    @ApiModelProperty("where过滤条件")
+    private Map<String, Object> whereFilter;
+
     private Long jobId;
 
     private Integer limit;

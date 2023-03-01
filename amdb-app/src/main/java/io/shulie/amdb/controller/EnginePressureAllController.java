@@ -64,6 +64,9 @@ public class EnginePressureAllController {
             clickhouseQueryRequest.setFieldAndAlias(request.getFieldAndAlias());
         }
         Map<String, Object> whereFilter = new HashMap<>();
+        if (request.getWhereFilter() != null && !request.getWhereFilter().isEmpty()){
+            whereFilter.putAll(request.getWhereFilter());
+        }
         if (StringUtils.isNotBlank(request.getTransaction())) {
             whereFilter.put("transaction", request.getTransaction());
         }
