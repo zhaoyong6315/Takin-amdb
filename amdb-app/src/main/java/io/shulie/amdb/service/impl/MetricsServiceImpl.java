@@ -286,7 +286,7 @@ public class MetricsServiceImpl implements MetricsService {
                     int sumSuccessCount = traceMetrics.stream().mapToInt(TraceMetrics::getSuccessCount).sum();
                     int sumTotalRt = traceMetrics.stream().mapToInt(TraceMetrics::getTotalRt).sum();
                     requestCount = traceMetrics.stream().mapToInt(TraceMetrics::getTotalCount).sum();
-                    tps = requestCount / diffInMillis;
+                    tps = diffInMillis == 0 ? 0 : requestCount / diffInMillis;
                     successRatio = sumSuccessCount / requestCount;
                     responseConsuming = sumTotalRt / requestCount;
                     response.setRequestCount(requestCount);                 //总请求次数
