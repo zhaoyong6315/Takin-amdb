@@ -243,7 +243,7 @@ public class MetricsServiceImpl implements MetricsService {
         }
 
         //计算数据间隔描述，为计算tps准备
-        int diffInMillis = 300;
+        int diffInSecond = 300;
         String maxTime = resultList.get(0).getTime();
         String minTime = resultList.get(size - 1).getTime();
 
@@ -251,7 +251,8 @@ public class MetricsServiceImpl implements MetricsService {
             long firstDate = Long.parseLong(minTime);
             long secondDate = Long.parseLong(maxTime);
             realEndTime = sdf.format(secondDate);
-            diffInMillis = ((int) (Math.abs(secondDate - firstDate) / 1000)) + 5000;
+            //因为库中数据为5秒一个节点，所以时间段需要加5
+            diffInSecond = ((int) (Math.abs(secondDate - firstDate) / 1000)) + 5;
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -288,7 +289,7 @@ public class MetricsServiceImpl implements MetricsService {
                     int sumSuccessCount = traceMetrics.stream().mapToInt(TraceMetrics::getSuccessCount).sum();
                     int sumTotalRt = traceMetrics.stream().mapToInt(TraceMetrics::getTotalRt).sum();
                     requestCount = traceMetrics.stream().mapToInt(TraceMetrics::getTotalCount).sum();
-                    tps = requestCount / diffInMillis;
+                    tps = requestCount / diffInSecond;
                     successRatio = sumSuccessCount / requestCount;
                     responseConsuming = sumTotalRt / requestCount;
                     response.setRequestCount(requestCount);                 //总请求次数
@@ -297,7 +298,7 @@ public class MetricsServiceImpl implements MetricsService {
                     response.setSuccessRatio(successRatio);                 //成功率
                     response.setStartTime(startTime);
                     response.setEndTime(realEndTime);
-                    response.setTimeGap(diffInMillis);
+                    response.setTimeGap(diffInSecond);
                     resultList2.add(response);
                 }
             }
