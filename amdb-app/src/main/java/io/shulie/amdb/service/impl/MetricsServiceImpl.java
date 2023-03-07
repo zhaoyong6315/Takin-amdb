@@ -158,6 +158,7 @@ public class MetricsServiceImpl implements MetricsService {
         if (StringUtils.isNotBlank(startTime)) {
             try {
                 clickhouseQueryRequest.setStartTime(sdf.parse(startTime).getTime());
+                clickhouseQueryRequest.setStartTimeEqual(true);
             } catch (ParseException e) {
                 e.printStackTrace();
             }
@@ -165,6 +166,7 @@ public class MetricsServiceImpl implements MetricsService {
         if (StringUtils.isNotBlank(endTime)) {
             try {
                 clickhouseQueryRequest.setEndTime(sdf.parse(endTime).getTime());
+                clickhouseQueryRequest.setEndTimeEqual(false);
             } catch (ParseException e) {
                 e.printStackTrace();
             }
@@ -246,10 +248,10 @@ public class MetricsServiceImpl implements MetricsService {
         String minTime = resultList.get(size - 1).getTime();
 
         try {
-            Date firstDate = new Date(minTime);
-            Date secondDate = new Date(maxTime);
+            long firstDate = Long.parseLong(minTime);
+            long secondDate = Long.parseLong(maxTime);
             realEndTime = sdf.format(secondDate);
-            diffInMillis = ((int) (Math.abs(secondDate.getTime() - firstDate.getTime()) / 1000));
+            diffInMillis = ((int) (Math.abs(secondDate - firstDate) / 1000)) + 5000;
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -286,7 +288,7 @@ public class MetricsServiceImpl implements MetricsService {
                     int sumSuccessCount = traceMetrics.stream().mapToInt(TraceMetrics::getSuccessCount).sum();
                     int sumTotalRt = traceMetrics.stream().mapToInt(TraceMetrics::getTotalRt).sum();
                     requestCount = traceMetrics.stream().mapToInt(TraceMetrics::getTotalCount).sum();
-                    tps = diffInMillis == 0 ? 0 : requestCount / diffInMillis;
+                    tps = requestCount / diffInMillis;
                     successRatio = sumSuccessCount / requestCount;
                     responseConsuming = sumTotalRt / requestCount;
                     response.setRequestCount(requestCount);                 //总请求次数
