@@ -745,7 +745,7 @@ public class MetricsServiceImpl implements MetricsService {
                     resultMap.put("allTotalRt", Long.parseLong(serie.get("allTotalRt").toString()));
                     long maxTime = Long.parseLong(serie.get("maxTime").toString());
                     long minTime = Long.parseLong(serie.get("minTime").toString());
-                    resultMap.put("realSeconds", (maxTime - minTime) / 1000);
+                    resultMap.put("realSeconds", (maxTime - minTime) / 1000 + 5);
                     result.add(resultMap);
                 });
 
