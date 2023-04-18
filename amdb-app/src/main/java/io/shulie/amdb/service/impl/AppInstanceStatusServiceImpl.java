@@ -278,11 +278,11 @@ public class AppInstanceStatusServiceImpl implements AppInstanceStatusService {
     }
 
     @Override
-    public void batchOfflineByTime(Date date) {
+    public int batchOfflineByTime(Date date) {
         Example example = new Example(TAmdbAppInstanceStatusDO.class);
         Criteria criteria = example.createCriteria();
         criteria.andLessThan("gmtModify", date);
-        appInstanceStatusMapper.deleteByExample(example);
+        return appInstanceStatusMapper.deleteByExample(example);
     }
 
     private Criteria createInstanceStatusCriteria(Example example, AppInstanceStatusQueryRequest param) {

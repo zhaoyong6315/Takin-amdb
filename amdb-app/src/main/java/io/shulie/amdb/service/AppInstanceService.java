@@ -92,5 +92,5 @@ public interface AppInstanceService {
      */
     Response<List<AppInfo>> queryAppInfo(AppInfoQueryRequest request);
 
-    void batchOfflineByTime(Date time);
+    int batchOfflineByTime(Date time);
 }

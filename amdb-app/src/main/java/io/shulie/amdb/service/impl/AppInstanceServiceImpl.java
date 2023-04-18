@@ -325,15 +325,17 @@ public class AppInstanceServiceImpl implements AppInstanceService {
     }
 
     @Override
-    public void batchOfflineByTime(Date time) {
+    public int batchOfflineByTime(Date time) {
         Example example = new Example(TAmdbAppInstanceStatusDO.class);
         Example.Criteria criteria = example.createCriteria();
         criteria.andLessThan("gmtModify", time);
+        criteria.andCondition("(flag&1)=1");
         List<TAmdbAppInstanceDO> tAmdbAppInstanceDOS = appInstanceMapper.selectByExample(example);
         tAmdbAppInstanceDOS.forEach(tAmdbAppInstanceDO -> {
             tAmdbAppInstanceDO.setFlag(FlagUtil.setFlag(tAmdbAppInstanceDO.getFlag(), 1, false));
             appInstanceMapper.updateByPrimaryKey(tAmdbAppInstanceDO);
         });
+        return tAmdbAppInstanceDOS.size();
     }
 
     private AgentInfoDTO agentId(TAmdbAgentInfoDO agentInfoDO) {

@@ -42,6 +42,6 @@ public interface TAmdbAgentConfigDOMapper extends Mapper<TAmdbAgentConfigDO> {
     @Delete("delete from t_amdb_agent_config where 1=1")
     void deleteAll();
 
-    @Delete("delete from t_amdb_agent_config where 1=1 and gmt_create <![CDATA[ <= ]]> #{time}")
+    @Delete("delete from t_amdb_agent_config where 1=1 and gmt_create <= #{time}")
     void batchOfflineByTime(Date time);
 }

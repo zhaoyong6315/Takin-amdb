@@ -70,6 +70,6 @@ public interface AppInstanceStatusService {
      */
     AgentStatusStatInfo countStatus(AppInstanceStatusQueryRequest param);
 
-    void batchOfflineByTime(Date date);
+    int batchOfflineByTime(Date date);
 
 }

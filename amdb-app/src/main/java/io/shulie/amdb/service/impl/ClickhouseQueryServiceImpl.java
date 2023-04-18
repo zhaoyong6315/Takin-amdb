@@ -179,6 +179,9 @@ public class ClickhouseQueryServiceImpl implements ClickhouseQueryService {
         if (orFilterList.isEmpty()) {
             return StringUtils.join(inFilterList, " and ");
         }
+        if (inFilterList.isEmpty()){
+            return StringUtils.join(orFilterList, " and ");
+        }
         return StringUtils.join(inFilterList, " and ") + " and " + StringUtils.join(orFilterList, " and ");
     }
 
